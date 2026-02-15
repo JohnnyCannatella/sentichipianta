@@ -7,7 +7,7 @@ import '../models/plant_reading.dart';
 
 class PlantRepository {
   PlantRepository({SupabaseClient? client})
-      : _client = client ?? Supabase.instance.client;
+    : _client = client ?? Supabase.instance.client;
 
   final SupabaseClient _client;
   static final StreamController<void> _changesController =
@@ -66,8 +66,10 @@ class PlantRepository {
 
   Stream<List<Plant>> plants() {
     return _watch(() async {
-      final rows =
-          await _client.from('plants').select().order('created_at', ascending: true);
+      final rows = await _client
+          .from('plants')
+          .select()
+          .order('created_at', ascending: true);
       final list = rows as List<dynamic>;
       return list
           .map((row) => Plant.fromMap(Map<String, dynamic>.from(row as Map)))
@@ -117,20 +119,23 @@ class PlantRepository {
     double? luxLow,
     double? luxHigh,
   }) async {
-    await _client.from('plants').update({
-      'name': name,
-      'personality': personality.isEmpty
-          ? 'Gentile, poetica, ironica quanto basta. Parla in prima persona.'
-          : personality,
-      'plant_type': plantType,
-      'photo_url': photoUrl,
-      'notes': notes,
-      'moisture_low': moistureLow,
-      'moisture_ok': moistureOk,
-      'moisture_high': moistureHigh,
-      'lux_low': luxLow,
-      'lux_high': luxHigh,
-    }).eq('id', id);
+    await _client
+        .from('plants')
+        .update({
+          'name': name,
+          'personality': personality.isEmpty
+              ? 'Gentile, poetica, ironica quanto basta. Parla in prima persona.'
+              : personality,
+          'plant_type': plantType,
+          'photo_url': photoUrl,
+          'notes': notes,
+          'moisture_low': moistureLow,
+          'moisture_ok': moistureOk,
+          'moisture_high': moistureHigh,
+          'lux_low': luxLow,
+          'lux_high': luxHigh,
+        })
+        .eq('id', id);
     _notifyChanged();
   }
 
@@ -151,8 +156,11 @@ class PlantRepository {
   }
 
   Future<bool> hasReadings(String plantId) async {
-    final response =
-        await _client.from('readings').select('id').eq('plant_id', plantId).limit(1);
+    final response = await _client
+        .from('readings')
+        .select('id')
+        .eq('plant_id', plantId)
+        .limit(1);
     return response.isNotEmpty;
   }
 
@@ -161,44 +169,33 @@ class PlantRepository {
   }
 
   Stream<PlantReading?> latestReadingForPlant({String? plantId}) {
-    return _watch(() async {
-      final rows = plantId != null && plantId.isNotEmpty
-          ? await _client
-              .from('readings')
-              .select()
-              .eq('plant_id', plantId)
-              .order('created_at', ascending: false)
-              .limit(1)
-          : await _client
-              .from('readings')
-              .select()
-              .order('created_at', ascending: false)
-              .limit(1);
-      final list = rows as List<dynamic>;
-      if (list.isEmpty) {
+    return _client
+        .from('readings')
+        .stream(primaryKey: ['id'])
+        .order('created_at', ascending: false)
+        .map((rows) {
+      final filteredRows = plantId != null && plantId.isNotEmpty
+          ? rows.where((row) => row['plant_id'] == plantId).toList()
+          : rows;
+      if (filteredRows.isEmpty) {
         return null;
       }
-      return PlantReading.fromMap(Map<String, dynamic>.from(list.first as Map));
+      return PlantReading.fromMap(Map<String, dynamic>.from(filteredRows.first));
     });
   }
 
   Stream<List<PlantReading>> recentReadings({int limit = 20, String? plantId}) {
-    return _watch(() async {
-      final rows = plantId != null && plantId.isNotEmpty
-          ? await _client
-              .from('readings')
-              .select()
-              .eq('plant_id', plantId)
-              .order('created_at', ascending: false)
-              .limit(limit)
-          : await _client
-              .from('readings')
-              .select()
-              .order('created_at', ascending: false)
-              .limit(limit);
-      final list = rows as List<dynamic>;
-      return list
-          .map((row) => PlantReading.fromMap(Map<String, dynamic>.from(row as Map)))
+    return _client
+        .from('readings')
+        .stream(primaryKey: ['id'])
+        .order('created_at', ascending: false)
+        .map((rows) {
+      final filteredRows = plantId != null && plantId.isNotEmpty
+          ? rows.where((row) => row['plant_id'] == plantId)
+          : rows;
+      return filteredRows
+          .take(limit)
+          .map((row) => PlantReading.fromMap(Map<String, dynamic>.from(row)))
           .toList(growable: false);
     });
   }
@@ -207,48 +204,44 @@ class PlantRepository {
     required DateTime since,
     String? plantId,
   }) {
-    return _watch(() async {
-      final rows = plantId != null && plantId.isNotEmpty
-          ? await _client
-              .from('readings')
-              .select()
-              .eq('plant_id', plantId)
-              .order('created_at', ascending: false)
-          : await _client
-              .from('readings')
-              .select()
-              .order('created_at', ascending: false);
-      final list = (rows as List<dynamic>)
-          .map((row) => Map<String, dynamic>.from(row as Map))
-          .where((row) {
-        final createdAt = DateTime.parse(row['created_at'] as String);
-        return createdAt.isAfter(since);
-      }).toList();
-      return list
-          .map((row) => PlantReading.fromMap(row))
+    return _client
+        .from('readings')
+        .stream(primaryKey: ['id'])
+        .order('created_at', ascending: false)
+        .map((rows) {
+      final filteredRows = rows.where((row) {
+        if (plantId != null && plantId.isNotEmpty && row['plant_id'] != plantId) {
+          return false;
+        }
+        final createdAt = DateTime.tryParse(row['created_at'] as String? ?? '');
+        return createdAt != null && createdAt.isAfter(since);
+      });
+      return filteredRows
+          .map((row) => PlantReading.fromMap(Map<String, dynamic>.from(row)))
           .toList(growable: false);
     });
   }
 
   Stream<List<ChatMessage>> messages({required String plantId}) {
-    return _watch(() async {
-      final rows = await _client
-          .from('messages')
-          .select()
-          .eq('plant_id', plantId)
-          .order('created_at', ascending: true);
-      final list = rows as List<dynamic>;
-      return list
-          .map((row) => ChatMessage.fromMap(Map<String, dynamic>.from(row as Map)))
-          .toList(growable: false);
-    });
+    return _client
+        .from('messages')
+        .stream(primaryKey: ['id'])
+        .eq('plant_id', plantId)
+        .order('created_at', ascending: true)
+        .map(
+          (rows) => rows
+              .map((row) => ChatMessage.fromMap(Map<String, dynamic>.from(row)))
+              .toList(growable: false),
+        );
   }
 
   Future<int> clearConversation({required String plantId}) async {
     await _client.from('messages').delete().eq('plant_id', plantId);
     // Verify effective deletion (useful when RLS prevents delete silently).
-    final remaining =
-        await _client.from('messages').select('id').eq('plant_id', plantId);
+    final remaining = await _client
+        .from('messages')
+        .select('id')
+        .eq('plant_id', plantId);
     _notifyChanged();
     return (remaining as List<dynamic>).length;
   }

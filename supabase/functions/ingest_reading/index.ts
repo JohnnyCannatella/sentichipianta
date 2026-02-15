@@ -55,11 +55,17 @@ serve(async (req) => {
 
   const moisture = Number(payload.moisture);
   const lux = Number(payload.lux);
+  const temperature = payload.temperature == null
+    ? null
+    : Number(payload.temperature);
   const createdAt = payload.created_at ? String(payload.created_at) : null;
   const plantId = payload.plant_id ? String(payload.plant_id) : null;
 
   if (Number.isNaN(moisture) || Number.isNaN(lux)) {
     return jsonResponse(400, { error: "moisture and lux must be numbers" });
+  }
+  if (temperature != null && Number.isNaN(temperature)) {
+    return jsonResponse(400, { error: "temperature must be a number" });
   }
 
   if (!plantId || plantId.length == 0) {
@@ -70,6 +76,7 @@ serve(async (req) => {
     moisture,
     lux,
   };
+  if (temperature != null) insertPayload.temperature = temperature;
   if (createdAt) insertPayload.created_at = createdAt;
   insertPayload.plant_id = plantId;
 

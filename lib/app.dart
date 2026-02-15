@@ -127,7 +127,7 @@ class _ConfigBanner extends StatelessWidget {
     return Material(
       elevation: 3,
       borderRadius: BorderRadius.circular(16),
-      color: const Color(0xFF2E3C2F),
+      color: const Color(0xFF2E333B),
       child: Padding(
         padding: const EdgeInsets.all(14),
         child: Row(

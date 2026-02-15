@@ -131,16 +131,16 @@ class _BottomPillNav extends StatelessWidget {
   Widget build(BuildContext context) {
     const labels = ['Dashboard', 'Chat', 'Storico', 'Piante'];
     const outlinedIcons = [
-      Icons.eco_outlined,
-      Icons.favorite_border,
-      Icons.shopping_cart_outlined,
-      Icons.person_outline,
+      Icons.dashboard_outlined,
+      Icons.chat_bubble_outline,
+      Icons.history,
+      Icons.local_florist_outlined,
     ];
     const filledIcons = [
-      Icons.eco,
-      Icons.favorite,
-      Icons.shopping_cart,
-      Icons.person,
+      Icons.dashboard,
+      Icons.chat_bubble,
+      Icons.history,
+      Icons.local_florist,
     ];
 
     return SafeArea(

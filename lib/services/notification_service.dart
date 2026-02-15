@@ -8,6 +8,7 @@ class NotificationService {
 
   final _plugin = FlutterLocalNotificationsPlugin();
   bool _initialized = false;
+  int _nextNotificationId = 2000;
 
   Future<void> init() async {
     if (_initialized) return;
@@ -53,6 +54,24 @@ class NotificationService {
           'Critical Alerts',
           channelDescription: 'Avvisi per condizioni critiche della pianta',
           importance: Importance.max,
+          priority: Priority.high,
+        ),
+        iOS: DarwinNotificationDetails(),
+      ),
+    );
+  }
+
+  Future<void> showRoutineAlert({required String title, required String body}) {
+    return _plugin.show(
+      _nextNotificationId++,
+      title,
+      body,
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'routine_alerts',
+          'Routine Alerts',
+          channelDescription: 'Promemoria e alert della routine della pianta',
+          importance: Importance.high,
           priority: Priority.high,
         ),
         iOS: DarwinNotificationDetails(),

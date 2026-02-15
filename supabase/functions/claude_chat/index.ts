@@ -65,13 +65,17 @@ serve(async (req) => {
   );
 
   const reading = payload.reading ?? null;
+  const tempSegment =
+    reading && reading.temperature != null
+      ? `, temperatura ${reading.temperature}°C`
+      : "";
   const readingLine = reading
-    ? `Dati sensori: umidita ${reading.moisture}%, luce ${reading.lux} lx.`
+    ? `Dati sensori: umidita ${reading.moisture}%, luce ${reading.lux} lx${tempSegment}.`
     : "";
 
   const systemPrompt =
     `Sei la pianta '${plantName}'. ${personality} ` +
-    "Rispondi in italiano, breve ma espressivo. " +
+    "Rispondi in italiano, breve ma espressivo, mantenendo SEMPRE questa personalita e questo tono. " +
     "Se i dati indicano urgenza, fallo notare con gentilezza. " +
     readingLine;
 
