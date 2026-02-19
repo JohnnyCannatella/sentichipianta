@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 import '../../data/plant_repository.dart';
 import '../../domain/plant_insight.dart';
@@ -25,9 +26,9 @@ class _PlantsScreenState extends State<PlantsScreen> {
 
   void _refresh() {
     setState(() {});
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Aggiornato ora')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Aggiornato ora')));
   }
 
   @override
@@ -40,6 +41,9 @@ class _PlantsScreenState extends State<PlantsScreen> {
   Widget build(BuildContext context) {
     final repository = PlantRepository();
     final interpreter = PlantInterpreter();
+    final isCompact = MediaQuery.sizeOf(context).width < 380;
+    final outerHorizontal = isCompact ? 10.0 : 14.0;
+    final innerHorizontal = isCompact ? 10.0 : 12.0;
 
     return SafeArea(
       child: StreamBuilder<List<Plant>>(
@@ -76,10 +80,14 @@ class _PlantsScreenState extends State<PlantsScreen> {
                 if (_sort == _PlantSort.name) {
                   return a.name.toLowerCase().compareTo(b.name.toLowerCase());
                 }
-                final aCritical =
-                    interpreter.isCritical(latestByPlant[a.id], plant: a);
-                final bCritical =
-                    interpreter.isCritical(latestByPlant[b.id], plant: b);
+                final aCritical = interpreter.isCritical(
+                  latestByPlant[a.id],
+                  plant: a,
+                );
+                final bCritical = interpreter.isCritical(
+                  latestByPlant[b.id],
+                  plant: b,
+                );
                 if (aCritical != bCritical) {
                   return aCritical ? -1 : 1;
                 }
@@ -88,8 +96,10 @@ class _PlantsScreenState extends State<PlantsScreen> {
 
               final criticalCount = plants
                   .where(
-                    (plant) =>
-                        interpreter.isCritical(latestByPlant[plant.id], plant: plant),
+                    (plant) => interpreter.isCritical(
+                      latestByPlant[plant.id],
+                      plant: plant,
+                    ),
                   )
                   .length;
 
@@ -98,206 +108,217 @@ class _PlantsScreenState extends State<PlantsScreen> {
                   gradient: LinearGradient(
                     begin: Alignment.topCenter,
                     end: Alignment.bottomCenter,
-                    colors: [Color(0xFFC7D3C0), Color(0xFFB6C5AE)],
+                    colors: [Color(0xFFF2F0EB), Color(0xFFE4DED5)],
                   ),
                 ),
                 child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                  padding: EdgeInsets.fromLTRB(
+                    outerHorizontal,
+                    12,
+                    outerHorizontal,
+                    18,
+                  ),
                   child: Container(
-                    padding: const EdgeInsets.fromLTRB(14, 14, 14, 16),
+                    padding: EdgeInsets.fromLTRB(
+                      innerHorizontal,
+                      12,
+                      innerHorizontal,
+                      14,
+                    ),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFEDEFE8),
-                      borderRadius: BorderRadius.circular(28),
-                      border: Border.all(color: const Color(0xB2FFFFFF), width: 1.2),
+                      color: const Color(0xFFF8F6F2),
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(
+                        color: const Color(0xFFE1DACF),
+                        width: 1,
+                      ),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                      _PlantsTopBar(
-                        onRefresh: _refresh,
-                        onAdd: () =>
-                            _openEditor(context, repository, plants: plants),
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        'Le mie piante',
-                        style: Theme.of(context).textTheme.headlineSmall,
-                      ),
-                      const SizedBox(height: 6),
-                      Row(
-                        children: [
-                          _CountPill(
-                            icon: Icons.spa_outlined,
-                            label: 'Totali ${plants.length}',
-                          ),
-                          const SizedBox(width: 8),
-                          _CountPill(
-                            icon: Icons.warning_amber_rounded,
-                            label: 'Critiche $criticalCount',
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _searchController,
-                        onChanged: (_) => setState(() {}),
-                        decoration: InputDecoration(
-                          hintText: 'Cerca una pianta...',
-                          prefixIcon: const Icon(Icons.search),
-                          suffixIcon: _searchController.text.isEmpty
-                              ? null
-                              : IconButton(
-                                  onPressed: () {
-                                    _searchController.clear();
-                                    setState(() {});
-                                  },
-                                  icon: const Icon(Icons.close),
-                                ),
+                        _PlantsTopBar(
+                          onRefresh: _refresh,
+                          onAdd: () =>
+                              _openEditor(context, repository, plants: plants),
                         ),
-                      ),
-                      const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          FilterChip(
-                            selected: _criticalOnly,
-                            label: const Text('Solo critiche'),
-                            onSelected: (value) {
-                              setState(() => _criticalOnly = value);
-                            },
-                          ),
-                          const SizedBox(width: 8),
-                          DropdownButton<_PlantSort>(
-                            value: _sort,
-                            underline: const SizedBox.shrink(),
-                            borderRadius: BorderRadius.circular(12),
-                            onChanged: (value) {
-                              if (value != null) {
-                                setState(() => _sort = value);
-                              }
-                            },
-                            items: const [
-                              DropdownMenuItem(
-                                value: _PlantSort.status,
-                                child: Text('Ordina: stato'),
-                              ),
-                              DropdownMenuItem(
-                                value: _PlantSort.name,
-                                child: Text('Ordina: nome'),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      SizedBox(
-                        height: 210,
-                        child: filteredPlants.isEmpty
-                            ? _EmptyState(
-                                onAdd: () => _openEditor(
-                                  context,
-                                  repository,
-                                  plants: plants,
-                                ),
-                                message: plants.isEmpty
-                                    ? 'Nessuna pianta configurata'
-                                    : 'Nessuna pianta corrisponde ai filtri',
-                              )
-                            : ListView.separated(
-                                scrollDirection: Axis.horizontal,
-                                itemCount: filteredPlants.length,
-                                separatorBuilder: (context, index) =>
-                                    const SizedBox(width: 12),
-                                itemBuilder: (context, index) {
-                                  final plant = filteredPlants[index];
-                                  final latest = latestByPlant[plant.id];
-                                  final isCritical = interpreter.isCritical(
-                                    latest,
-                                    plant: plant,
-                                  );
-                                  return SizedBox(
-                                    width: 178,
-                                    child: GestureDetector(
-                                      onTap: () => Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (_) =>
-                                              PlantDetailScreen(plant: plant),
-                                        ),
-                                      ),
-                                      child: _PlantCard(
-                                        plant: plant,
-                                        isCritical: isCritical,
-                                        onEdit: () => _openEditor(
-                                          context,
-                                          repository,
-                                          plants: plants,
-                                          plant: plant,
-                                        ),
-                                        onDuplicate: () => _duplicatePlant(
-                                          context,
-                                          repository,
-                                          plant,
-                                        ),
-                                        onTest: () => Navigator.push(
-                                          context,
-                                          MaterialPageRoute(
-                                            builder: (_) => TestThresholdScreen(
-                                              plant: plant,
-                                            ),
-                                          ),
-                                        ),
-                                        onDelete: () => _confirmDelete(
-                                          context,
-                                          repository,
-                                          plant: plant,
-                                        ),
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                      ),
-                      const SizedBox(height: 24),
-                      Text(
-                        'Esplora',
-                        style: Theme.of(context).textTheme.titleLarge,
-                      ),
-                      const SizedBox(height: 12),
-                      SizedBox(
-                        height: 130,
-                        child: ListView.separated(
-                          scrollDirection: Axis.horizontal,
-                          itemCount: filteredPlants.length,
-                          separatorBuilder: (context, index) =>
-                              const SizedBox(width: 12),
-                          itemBuilder: (context, index) {
-                            final plant = filteredPlants[index];
-                            return _ExploreCard(plant: plant);
-                          },
+                        const SizedBox(height: 12),
+                        Text(
+                          'Le mie piante',
+                          style: Theme.of(context).textTheme.headlineSmall,
                         ),
-                      ),
-                      const SizedBox(height: 16),
-                      Container(
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: AppColors.card,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: AppColors.outline),
-                        ),
-                        child: Row(
+                        const SizedBox(height: 6),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
                           children: [
-                            const Icon(Icons.tips_and_updates_outlined,
-                                color: AppColors.textDark),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                'Tip: usa il filtro "Solo critiche" per intervenire subito.',
-                                style: Theme.of(context).textTheme.bodyMedium,
+                            _CountPill(
+                              icon: Icons.spa_outlined,
+                              label: 'Totali ${plants.length}',
+                            ),
+                            _CountPill(
+                              icon: Icons.warning_amber_rounded,
+                              label: 'Critiche $criticalCount',
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: _searchController,
+                          onChanged: (_) => setState(() {}),
+                          decoration: InputDecoration(
+                            hintText: 'Cerca una pianta...',
+                            prefixIcon: const Icon(Icons.search),
+                            suffixIcon: _searchController.text.isEmpty
+                                ? null
+                                : IconButton(
+                                    onPressed: () {
+                                      _searchController.clear();
+                                      setState(() {});
+                                    },
+                                    icon: const Icon(Icons.close),
+                                  ),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            FilterChip(
+                              selected: _criticalOnly,
+                              label: const Text('Solo critiche'),
+                              onSelected: (value) {
+                                setState(() => _criticalOnly = value);
+                              },
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                              ),
+                              decoration: BoxDecoration(
+                                color: AppColors.card,
+                                borderRadius: BorderRadius.circular(999),
+                                border: Border.all(color: AppColors.outline),
+                              ),
+                              child: DropdownButton<_PlantSort>(
+                                value: _sort,
+                                underline: const SizedBox.shrink(),
+                                borderRadius: BorderRadius.circular(12),
+                                onChanged: (value) {
+                                  if (value != null) {
+                                    setState(() => _sort = value);
+                                  }
+                                },
+                                items: const [
+                                  DropdownMenuItem(
+                                    value: _PlantSort.status,
+                                    child: Text('Ordina: stato'),
+                                  ),
+                                  DropdownMenuItem(
+                                    value: _PlantSort.name,
+                                    child: Text('Ordina: nome'),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
                         ),
-                      ),
+                        const SizedBox(height: 12),
+                        if (filteredPlants.isEmpty)
+                          _EmptyState(
+                            onAdd: () => _openEditor(
+                              context,
+                              repository,
+                              plants: plants,
+                            ),
+                            message: plants.isEmpty
+                                ? 'Nessuna pianta configurata'
+                                : 'Nessuna pianta corrisponde ai filtri',
+                          )
+                        else
+                          ListView.separated(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            itemCount: filteredPlants.length,
+                            separatorBuilder: (context, index) =>
+                                const SizedBox(height: 10),
+                            itemBuilder: (context, index) {
+                              final plant = filteredPlants[index];
+                              final latest = latestByPlant[plant.id];
+                              final isCritical = interpreter.isCritical(
+                                latest,
+                                plant: plant,
+                              );
+                              return GestureDetector(
+                                onTap: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) =>
+                                        PlantDetailScreen(plant: plant),
+                                  ),
+                                ),
+                                child: _PlantCard(
+                                  plant: plant,
+                                  latest: latest,
+                                  isCritical: isCritical,
+                                  statusText: latest == null
+                                      ? 'Ancora nessuna lettura'
+                                      : interpreter
+                                            .interpret(latest, plant: plant)
+                                            .message,
+                                  onEdit: () => _openEditor(
+                                    context,
+                                    repository,
+                                    plants: plants,
+                                    plant: plant,
+                                  ),
+                                  onDuplicate: () => _duplicatePlant(
+                                    context,
+                                    repository,
+                                    plant,
+                                  ),
+                                  onTest: () => Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) =>
+                                          TestThresholdScreen(plant: plant),
+                                    ),
+                                  ),
+                                  onDelete: () => _confirmDelete(
+                                    context,
+                                    repository,
+                                    plant: plant,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: AppColors.card,
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: AppColors.outline),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.tips_and_updates_outlined,
+                                color: AppColors.textDark,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  criticalCount > 0
+                                      ? 'Hai $criticalCount piante da controllare: apri il dettaglio per azioni e storico decisioni.'
+                                      : 'Tutte le piante sono stabili: continua con letture regolari per mantenere previsioni accurate.',
+                                  style: Theme.of(context).textTheme.bodyMedium,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -330,9 +351,9 @@ class _PlantsScreenState extends State<PlantsScreen> {
     if (!context.mounted) {
       return;
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Creata "$duplicateName".')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Creata "$duplicateName".')));
   }
 
   Future<void> _openEditor(
@@ -341,31 +362,45 @@ class _PlantsScreenState extends State<PlantsScreen> {
     required List<Plant> plants,
     Plant? plant,
   }) async {
+    final initialPlantType = PlantType.normalize(
+      plant?.plantType ?? PlantType.fromName(plant?.name),
+    );
+    final initialPreset = PlantType.thresholdProfile(initialPlantType);
     final nameController = TextEditingController(text: plant?.name ?? '');
-    final personalityController =
-        TextEditingController(text: plant?.personality ?? '');
+    final personalityController = TextEditingController(
+      text: plant?.personality ?? '',
+    );
     final notesController = TextEditingController(text: plant?.notes ?? '');
     final moistureLowController = TextEditingController(
-      text: plant?.moistureLow?.toStringAsFixed(0) ?? '',
+      text:
+          plant?.moistureLow?.toStringAsFixed(0) ??
+          (plant == null ? initialPreset.moistureLow.toStringAsFixed(0) : ''),
     );
     final moistureOkController = TextEditingController(
-      text: plant?.moistureOk?.toStringAsFixed(0) ?? '',
+      text:
+          plant?.moistureOk?.toStringAsFixed(0) ??
+          (plant == null ? initialPreset.moistureOk.toStringAsFixed(0) : ''),
     );
     final moistureHighController = TextEditingController(
-      text: plant?.moistureHigh?.toStringAsFixed(0) ?? '',
+      text:
+          plant?.moistureHigh?.toStringAsFixed(0) ??
+          (plant == null ? initialPreset.moistureHigh.toStringAsFixed(0) : ''),
     );
     final luxLowController = TextEditingController(
-      text: plant?.luxLow?.toStringAsFixed(0) ?? '',
+      text:
+          plant?.luxLow?.toStringAsFixed(0) ??
+          (plant == null ? initialPreset.luxLow.toStringAsFixed(0) : ''),
     );
     final luxHighController = TextEditingController(
-      text: plant?.luxHigh?.toStringAsFixed(0) ?? '',
+      text:
+          plant?.luxHigh?.toStringAsFixed(0) ??
+          (plant == null ? initialPreset.luxHigh.toStringAsFixed(0) : ''),
     );
     String? nameError;
     String? personalityError;
     String? moistureError;
     String? luxError;
-    var selectedPlantType =
-        PlantType.normalize(plant?.plantType ?? PlantType.fromName(plant?.name));
+    var selectedPlantType = initialPlantType;
 
     final saved = await showModalBottomSheet<bool>(
       context: context,
@@ -392,20 +427,22 @@ class _PlantsScreenState extends State<PlantsScreen> {
               );
 
               final moistureProvided =
-                  moistureLow != null || moistureOk != null || moistureHigh != null;
+                  moistureLow != null ||
+                  moistureOk != null ||
+                  moistureHigh != null;
               final luxProvided = luxLow != null || luxHigh != null;
 
               setModalState(() {
                 nameError = name.isEmpty
                     ? 'Il nome e obbligatorio'
                     : duplicate
-                        ? 'Nome gia presente'
-                        : null;
+                    ? 'Nome gia presente'
+                    : null;
                 personalityError = personality.isEmpty
                     ? 'La personalita e obbligatoria'
                     : personality.length < 10
-                        ? 'Personalita troppo breve'
-                        : null;
+                    ? 'Personalita troppo breve'
+                    : null;
                 moistureError = moistureProvided
                     ? _validateMoisture(moistureLow, moistureOk, moistureHigh)
                     : null;
@@ -465,9 +502,27 @@ class _PlantsScreenState extends State<PlantsScreen> {
                     ],
                     onChanged: (value) {
                       if (value != null) {
-                        setModalState(
-                          () => selectedPlantType = PlantType.normalize(value),
-                        );
+                        final normalized = PlantType.normalize(value);
+                        setModalState(() {
+                          selectedPlantType = normalized;
+                          if (plant == null) {
+                            final nextPreset = PlantType.thresholdProfile(
+                              normalized,
+                            );
+                            moistureLowController.text = nextPreset.moistureLow
+                                .toStringAsFixed(0);
+                            moistureOkController.text = nextPreset.moistureOk
+                                .toStringAsFixed(0);
+                            moistureHighController.text = nextPreset
+                                .moistureHigh
+                                .toStringAsFixed(0);
+                            luxLowController.text = nextPreset.luxLow
+                                .toStringAsFixed(0);
+                            luxHighController.text = nextPreset.luxHigh
+                                .toStringAsFixed(0);
+                          }
+                        });
+                        validate();
                       }
                     },
                   ),
@@ -484,6 +539,17 @@ class _PlantsScreenState extends State<PlantsScreen> {
                   Text(
                     'Soglie umidita (%)',
                     style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Preset ${PlantType.label(selectedPlantType)} · '
+                    'Umidita ${PlantType.thresholdProfile(selectedPlantType).moistureLow.toStringAsFixed(0)}-'
+                    '${PlantType.thresholdProfile(selectedPlantType).moistureHigh.toStringAsFixed(0)}% · '
+                    'Luce ${PlantType.thresholdProfile(selectedPlantType).luxLow.toStringAsFixed(0)}-'
+                    '${PlantType.thresholdProfile(selectedPlantType).luxHigh.toStringAsFixed(0)} lx',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: const Color(0xFF5B6258),
+                    ),
                   ),
                   const SizedBox(height: 8),
                   Row(
@@ -738,10 +804,7 @@ class _PlantsScreenState extends State<PlantsScreen> {
                 value: selected,
                 items: [
                   for (final plant in choices)
-                    DropdownMenuItem(
-                      value: plant,
-                      child: Text(plant.name),
-                    ),
+                    DropdownMenuItem(value: plant, child: Text(plant.name)),
                 ],
                 onChanged: (value) => setState(() => selected = value),
               ),
@@ -771,11 +834,7 @@ double? _parseNumber(String value) {
   return double.tryParse(trimmed);
 }
 
-String? _validateMoisture(
-  double? low,
-  double? ok,
-  double? high,
-) {
+String? _validateMoisture(double? low, double? ok, double? high) {
   if (low == null && ok == null && high == null) {
     return null;
   }
@@ -810,7 +869,9 @@ String? _validateLux(double? low, double? high) {
 class _PlantCard extends StatelessWidget {
   const _PlantCard({
     required this.plant,
+    required this.latest,
     required this.isCritical,
+    required this.statusText,
     required this.onTest,
     required this.onEdit,
     required this.onDuplicate,
@@ -818,7 +879,9 @@ class _PlantCard extends StatelessWidget {
   });
 
   final Plant plant;
+  final PlantReading? latest;
   final bool isCritical;
+  final String statusText;
   final VoidCallback onTest;
   final VoidCallback onEdit;
   final VoidCallback onDuplicate;
@@ -827,37 +890,67 @@ class _PlantCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppColors.primary,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.primaryDark),
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: isCritical ? AppColors.alertBorder : AppColors.outline,
+          width: isCritical ? 1.4 : 1,
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              if (isCritical)
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: AppColors.alertBg,
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: AppColors.alertBorder),
-                  ),
-                  child: Text(
-                    'Critico',
-                    style: Theme.of(context)
-                        .textTheme
-                        .labelSmall
-                        ?.copyWith(color: const Color(0xFFD25B4B)),
+              PlantAvatar(
+                plantName: plant.name,
+                plantType: plant.plantType,
+                size: 54,
+                radius: 12,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      plant.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      PlantType.label(plant.plantType),
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: AppColors.textMuted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: BoxDecoration(
+                  color: isCritical
+                      ? AppColors.alertBg
+                      : const Color(0xFFE6EFE9),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  isCritical ? 'Critico' : 'Stabile',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: isCritical
+                        ? AppColors.alertText
+                        : const Color(0xFF2F5C45),
                   ),
                 ),
-              const Spacer(),
+              ),
               PopupMenuButton<String>(
-                iconColor: Colors.white,
+                iconColor: AppColors.textDark,
                 onSelected: (value) {
                   switch (value) {
                     case 'test':
@@ -875,7 +968,10 @@ class _PlantCard extends StatelessWidget {
                   }
                 },
                 itemBuilder: (context) => [
-                  const PopupMenuItem(value: 'test', child: Text('Test soglie')),
+                  const PopupMenuItem(
+                    value: 'test',
+                    child: Text('Test soglie'),
+                  ),
                   const PopupMenuItem(value: 'edit', child: Text('Modifica')),
                   const PopupMenuItem(
                     value: 'duplicate',
@@ -887,34 +983,109 @@ class _PlantCard extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 4),
-          SizedBox(
-            height: 86,
-            child: Center(
-              child: PlantAvatar(
-                plantName: plant.name,
-                plantType: plant.plantType,
-                size: 86,
-                radius: 16,
-              ),
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF6F7F1),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.outline),
+            ),
+            child: Text(
+              statusText,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: AppColors.textDark),
             ),
           ),
-          const SizedBox(height: 4),
-          Text(
-            plant.name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context)
-                .textTheme
-                .titleMedium
-                ?.copyWith(color: Colors.white),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: _MetricPill(
+                  icon: Icons.water_drop_outlined,
+                  label: 'Umidita',
+                  value: latest == null
+                      ? '--'
+                      : '${latest!.moisture.toStringAsFixed(0)}%',
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _MetricPill(
+                  icon: Icons.light_mode_outlined,
+                  label: 'Luce',
+                  value: latest == null
+                      ? '--'
+                      : '${latest!.lux.toStringAsFixed(0)} lx',
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _MetricPill(
+                  icon: Icons.schedule,
+                  label: 'Ultima',
+                  value: latest == null
+                      ? '--'
+                      : DateFormat('dd/MM HH:mm').format(latest!.createdAt),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MetricPill extends StatelessWidget {
+  const _MetricPill({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F8F4),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.outline),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 13, color: AppColors.textMuted),
+              const SizedBox(width: 3),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelSmall?.copyWith(color: AppColors.textMuted),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 4),
           Text(
-            PlantType.label(plant.plantType),
-            style: Theme.of(
-              context,
-            ).textTheme.labelSmall?.copyWith(color: Colors.white70),
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.labelMedium,
           ),
         ],
       ),
@@ -923,10 +1094,7 @@ class _PlantCard extends StatelessWidget {
 }
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState({
-    required this.onAdd,
-    required this.message,
-  });
+  const _EmptyState({required this.onAdd, required this.message});
 
   final VoidCallback onAdd;
   final String message;
@@ -941,16 +1109,12 @@ class _EmptyState extends StatelessWidget {
           const SizedBox(height: 12),
           Text(
             message,
-            style: Theme.of(context)
-                .textTheme
-                .bodyMedium
-                ?.copyWith(color: const Color(0xFF5B6258)),
+            style: Theme.of(
+              context,
+            ).textTheme.bodyMedium?.copyWith(color: const Color(0xFF5B6258)),
           ),
           const SizedBox(height: 12),
-          FilledButton(
-            onPressed: onAdd,
-            child: const Text('Aggiungi pianta'),
-          ),
+          FilledButton(onPressed: onAdd, child: const Text('Aggiungi pianta')),
         ],
       ),
     );
@@ -967,27 +1131,17 @@ class _PlantsTopBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Container(
-          padding: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            color: const Color(0xFF191D18),
-            borderRadius: BorderRadius.circular(999),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _TopAction(icon: Icons.refresh, tooltip: 'Aggiorna', onTap: onRefresh),
-              const SizedBox(width: 6),
-              _TopAction(icon: Icons.add, tooltip: 'Aggiungi', onTap: onAdd),
-            ],
+        Text(
+          'Piante',
+          style: Theme.of(context).textTheme.titleLarge?.copyWith(
+            color: const Color(0xFF232830),
+            fontWeight: FontWeight.w700,
           ),
         ),
-        Expanded(
-          child: Center(
-            child: Icon(Icons.spa, color: AppColors.primary, size: 28),
-          ),
-        ),
-        const SizedBox(width: 1),
+        const Spacer(),
+        _TopAction(icon: Icons.refresh, tooltip: 'Aggiorna', onTap: onRefresh),
+        const SizedBox(width: 8),
+        _TopAction(icon: Icons.add, tooltip: 'Aggiungi', onTap: onAdd),
       ],
     );
   }
@@ -1010,15 +1164,15 @@ class _TopAction extends StatelessWidget {
       message: tooltip,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(999),
+        borderRadius: BorderRadius.circular(16),
         child: Container(
-          width: 38,
-          height: 38,
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            shape: BoxShape.circle,
+          width: 46,
+          height: 46,
+          decoration: BoxDecoration(
+            color: const Color(0xFF2A3038),
+            borderRadius: BorderRadius.circular(16),
           ),
-          child: Icon(icon, size: 20, color: Color(0xFF111612)),
+          child: Icon(icon, color: Colors.white),
         ),
       ),
     );
@@ -1026,10 +1180,7 @@ class _TopAction extends StatelessWidget {
 }
 
 class _CountPill extends StatelessWidget {
-  const _CountPill({
-    required this.icon,
-    required this.label,
-  });
+  const _CountPill({required this.icon, required this.label});
 
   final IconData icon;
   final String label;
@@ -1050,56 +1201,9 @@ class _CountPill extends StatelessWidget {
           const SizedBox(width: 6),
           Text(
             label,
-            style: Theme.of(context)
-                .textTheme
-                .labelSmall
-                ?.copyWith(color: AppColors.textDark),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ExploreCard extends StatelessWidget {
-  const _ExploreCard({required this.plant});
-
-  final Plant plant;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 110,
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.outline),
-      ),
-      child: Column(
-        children: [
-          CircleAvatar(
-            radius: 30,
-            backgroundColor: Color(0x1F2F8C57),
-            child: PlantAvatar(
-              plantName: plant.name,
-              plantType: plant.plantType,
-              size: 56,
-              radius: 999,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            plant.name,
-            style: Theme.of(context).textTheme.labelMedium,
-            overflow: TextOverflow.ellipsis,
-          ),
-          Text(
-            'Indoor',
-            style: Theme.of(context)
-                .textTheme
-                .labelSmall
-                ?.copyWith(color: AppColors.textMuted),
+            style: Theme.of(
+              context,
+            ).textTheme.labelSmall?.copyWith(color: AppColors.textDark),
           ),
         ],
       ),

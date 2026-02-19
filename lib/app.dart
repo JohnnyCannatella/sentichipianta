@@ -19,14 +19,15 @@ class SentiChiPiantaApp extends StatelessWidget {
       onPrimary: Colors.white,
     );
 
-    final textTheme = GoogleFonts.dmSerifDisplayTextTheme(
-      ThemeData.light().textTheme,
-    ).copyWith(
-      bodyLarge: GoogleFonts.dmSans(),
-      bodyMedium: GoogleFonts.dmSans(),
-      bodySmall: GoogleFonts.dmSans(),
-      labelLarge: GoogleFonts.dmSans(fontWeight: FontWeight.w600),
-    );
+    final textTheme =
+        GoogleFonts.dmSerifDisplayTextTheme(
+          ThemeData.light().textTheme,
+        ).copyWith(
+          bodyLarge: GoogleFonts.dmSans(),
+          bodyMedium: GoogleFonts.dmSans(),
+          bodySmall: GoogleFonts.dmSans(),
+          labelLarge: GoogleFonts.dmSans(fontWeight: FontWeight.w600),
+        );
 
     return MaterialApp(
       debugShowCheckedModeBanner: false,
@@ -64,9 +65,12 @@ class SentiChiPiantaApp extends StatelessWidget {
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(999),
           ),
-          labelStyle: textTheme.labelMedium?.copyWith(color: AppColors.textDark),
-          secondaryLabelStyle:
-              textTheme.labelMedium?.copyWith(color: AppColors.textDark),
+          labelStyle: textTheme.labelMedium?.copyWith(
+            color: AppColors.textDark,
+          ),
+          secondaryLabelStyle: textTheme.labelMedium?.copyWith(
+            color: AppColors.textDark,
+          ),
           disabledColor: AppColors.outline,
           brightness: Brightness.light,
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -108,12 +112,7 @@ class SentiChiPiantaApp extends StatelessWidget {
         return Stack(
           children: [
             child ?? const SizedBox.shrink(),
-            Positioned(
-              left: 16,
-              right: 16,
-              top: 16,
-              child: _ConfigBanner(),
-            ),
+            Positioned(left: 16, right: 16, top: 16, child: _ConfigBanner()),
           ],
         );
       },
@@ -136,11 +135,10 @@ class _ConfigBanner extends StatelessWidget {
             const SizedBox(width: 12),
             Expanded(
               child: Text(
-                'Config mancante: imposta SUPABASE_URL, SUPABASE_ANON_KEY e CLAUDE_API_KEY (oppure CLAUDE_ENDPOINT) con --dart-define.',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: Colors.white),
+                'Config mancante: imposta SUPABASE_URL, SUPABASE_ANON_KEY e AI_ENDPOINT (Fireworks) con --dart-define.',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyMedium?.copyWith(color: Colors.white),
               ),
             ),
           ],

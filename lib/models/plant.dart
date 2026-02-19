@@ -25,20 +25,22 @@ class Plant {
   final double? luxLow;
   final double? luxHigh;
 
-  static const double defaultMoistureLow = 15;
-  static const double defaultMoistureOk = 30;
-  static const double defaultMoistureHigh = 80;
-  static const double defaultLuxLow = 50;
-  static const double defaultLuxHigh = 18000;
+  static const double defaultMoistureLow = 20;
+  static const double defaultMoistureOk = 40;
+  static const double defaultMoistureHigh = 70;
+  static const double defaultLuxLow = 1200;
+  static const double defaultLuxHigh = 26000;
 
   factory Plant.fromMap(Map<String, dynamic> map) {
     return Plant(
       id: map['id'] as String,
       name: map['name'] as String,
-      personality: map['personality'] as String? ??
+      personality:
+          map['personality'] as String? ??
           'Gentile, poetica, ironica quanto basta. Parla in prima persona.',
       plantType: PlantType.normalize(
-        map['plant_type'] as String? ?? PlantType.fromName(map['name'] as String),
+        map['plant_type'] as String? ??
+            PlantType.fromName(map['name'] as String),
       ),
       photoUrl: map['photo_url'] as String?,
       notes: map['notes'] as String?,
@@ -50,11 +52,29 @@ class Plant {
     );
   }
 
-  double get effectiveMoistureLow => moistureLow ?? defaultMoistureLow;
-  double get effectiveMoistureOk => moistureOk ?? defaultMoistureOk;
-  double get effectiveMoistureHigh => moistureHigh ?? defaultMoistureHigh;
-  double get effectiveLuxLow => luxLow ?? defaultLuxLow;
-  double get effectiveLuxHigh => luxHigh ?? defaultLuxHigh;
+  PlantThresholdProfile get preset => PlantType.thresholdProfile(plantType);
+
+  double get effectiveMoistureLow => moistureLow ?? preset.moistureLow;
+  double get effectiveMoistureOk => moistureOk ?? preset.moistureOk;
+  double get effectiveMoistureHigh => moistureHigh ?? preset.moistureHigh;
+  double get effectiveLuxLow => luxLow ?? preset.luxLow;
+  double get effectiveLuxHigh => luxHigh ?? preset.luxHigh;
+}
+
+class PlantThresholdProfile {
+  const PlantThresholdProfile({
+    required this.moistureLow,
+    required this.moistureOk,
+    required this.moistureHigh,
+    required this.luxLow,
+    required this.luxHigh,
+  });
+
+  final double moistureLow;
+  final double moistureOk;
+  final double moistureHigh;
+  final double luxLow;
+  final double luxHigh;
 }
 
 class PlantType {
@@ -64,13 +84,7 @@ class PlantType {
   static const bonsai = 'bonsai';
   static const cactus = 'cactus';
 
-  static const values = [
-    generic,
-    peperoncino,
-    sansevieria,
-    bonsai,
-    cactus,
-  ];
+  static const values = [generic, peperoncino, sansevieria, bonsai, cactus];
 
   static String normalize(String value) {
     final normalized = value.trim().toLowerCase();
@@ -114,6 +128,51 @@ class PlantType {
         return 'Cactus';
       default:
         return 'Generica';
+    }
+  }
+
+  static PlantThresholdProfile thresholdProfile(String value) {
+    switch (normalize(value)) {
+      case peperoncino:
+        return const PlantThresholdProfile(
+          moistureLow: 28,
+          moistureOk: 45,
+          moistureHigh: 68,
+          luxLow: 2500,
+          luxHigh: 32000,
+        );
+      case sansevieria:
+        return const PlantThresholdProfile(
+          moistureLow: 12,
+          moistureOk: 24,
+          moistureHigh: 42,
+          luxLow: 400,
+          luxHigh: 12000,
+        );
+      case bonsai:
+        return const PlantThresholdProfile(
+          moistureLow: 32,
+          moistureOk: 50,
+          moistureHigh: 72,
+          luxLow: 1800,
+          luxHigh: 22000,
+        );
+      case cactus:
+        return const PlantThresholdProfile(
+          moistureLow: 8,
+          moistureOk: 18,
+          moistureHigh: 32,
+          luxLow: 2800,
+          luxHigh: 42000,
+        );
+      default:
+        return const PlantThresholdProfile(
+          moistureLow: Plant.defaultMoistureLow,
+          moistureOk: Plant.defaultMoistureOk,
+          moistureHigh: Plant.defaultMoistureHigh,
+          luxLow: Plant.defaultLuxLow,
+          luxHigh: Plant.defaultLuxHigh,
+        );
     }
   }
 }

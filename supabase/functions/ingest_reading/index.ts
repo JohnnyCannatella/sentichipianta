@@ -2,9 +2,17 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
-const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-const ingestSecret = Deno.env.get("INGEST_SECRET") ?? "";
+type DenoEnvAccessor = { get: (key: string) => string | undefined };
+type DenoGlobal = { env: DenoEnvAccessor };
+
+function readEnv(key: string): string {
+  const maybeDeno = (globalThis as { Deno?: DenoGlobal }).Deno;
+  return maybeDeno?.env.get(key) ?? "";
+}
+
+const supabaseUrl = readEnv("SUPABASE_URL");
+const serviceRoleKey = readEnv("SUPABASE_SERVICE_ROLE_KEY");
+const ingestSecret = readEnv("INGEST_SECRET");
 
 const supabase = createClient(supabaseUrl, serviceRoleKey, {
   auth: { persistSession: false },

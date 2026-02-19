@@ -2,6 +2,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:async';
 
 import '../models/plant.dart';
+import '../models/ai_decision.dart';
 import '../models/chat_message.dart';
 import '../models/plant_reading.dart';
 
@@ -174,14 +175,16 @@ class PlantRepository {
         .stream(primaryKey: ['id'])
         .order('created_at', ascending: false)
         .map((rows) {
-      final filteredRows = plantId != null && plantId.isNotEmpty
-          ? rows.where((row) => row['plant_id'] == plantId).toList()
-          : rows;
-      if (filteredRows.isEmpty) {
-        return null;
-      }
-      return PlantReading.fromMap(Map<String, dynamic>.from(filteredRows.first));
-    });
+          final filteredRows = plantId != null && plantId.isNotEmpty
+              ? rows.where((row) => row['plant_id'] == plantId).toList()
+              : rows;
+          if (filteredRows.isEmpty) {
+            return null;
+          }
+          return PlantReading.fromMap(
+            Map<String, dynamic>.from(filteredRows.first),
+          );
+        });
   }
 
   Stream<List<PlantReading>> recentReadings({int limit = 20, String? plantId}) {
@@ -190,14 +193,16 @@ class PlantRepository {
         .stream(primaryKey: ['id'])
         .order('created_at', ascending: false)
         .map((rows) {
-      final filteredRows = plantId != null && plantId.isNotEmpty
-          ? rows.where((row) => row['plant_id'] == plantId)
-          : rows;
-      return filteredRows
-          .take(limit)
-          .map((row) => PlantReading.fromMap(Map<String, dynamic>.from(row)))
-          .toList(growable: false);
-    });
+          final filteredRows = plantId != null && plantId.isNotEmpty
+              ? rows.where((row) => row['plant_id'] == plantId)
+              : rows;
+          return filteredRows
+              .take(limit)
+              .map(
+                (row) => PlantReading.fromMap(Map<String, dynamic>.from(row)),
+              )
+              .toList(growable: false);
+        });
   }
 
   Stream<List<PlantReading>> readingsSince({
@@ -209,17 +214,23 @@ class PlantRepository {
         .stream(primaryKey: ['id'])
         .order('created_at', ascending: false)
         .map((rows) {
-      final filteredRows = rows.where((row) {
-        if (plantId != null && plantId.isNotEmpty && row['plant_id'] != plantId) {
-          return false;
-        }
-        final createdAt = DateTime.tryParse(row['created_at'] as String? ?? '');
-        return createdAt != null && createdAt.isAfter(since);
-      });
-      return filteredRows
-          .map((row) => PlantReading.fromMap(Map<String, dynamic>.from(row)))
-          .toList(growable: false);
-    });
+          final filteredRows = rows.where((row) {
+            if (plantId != null &&
+                plantId.isNotEmpty &&
+                row['plant_id'] != plantId) {
+              return false;
+            }
+            final createdAt = DateTime.tryParse(
+              row['created_at'] as String? ?? '',
+            );
+            return createdAt != null && createdAt.isAfter(since);
+          });
+          return filteredRows
+              .map(
+                (row) => PlantReading.fromMap(Map<String, dynamic>.from(row)),
+              )
+              .toList(growable: false);
+        });
   }
 
   Stream<List<ChatMessage>> messages({required String plantId}) {
@@ -244,5 +255,33 @@ class PlantRepository {
         .eq('plant_id', plantId);
     _notifyChanged();
     return (remaining as List<dynamic>).length;
+  }
+
+  Stream<List<AiDecision>> recentAiDecisions({
+    required String plantId,
+    int limit = 20,
+  }) {
+    return _client
+        .from('ai_decisions')
+        .stream(primaryKey: ['id'])
+        .eq('plant_id', plantId)
+        .order('created_at', ascending: false)
+        .map(
+          (rows) => rows
+              .take(limit)
+              .map((row) => AiDecision.fromMap(Map<String, dynamic>.from(row)))
+              .toList(growable: false),
+        );
+  }
+
+  Future<void> updateAiDecisionOutcome({
+    required int decisionId,
+    required String outcome,
+  }) async {
+    await _client
+        .from('ai_decisions')
+        .update({'outcome': outcome})
+        .eq('id', decisionId);
+    _notifyChanged();
   }
 }

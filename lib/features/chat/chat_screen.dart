@@ -1,11 +1,16 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 
-import '../../data/claude_service.dart';
+import '../../data/ai_service.dart';
 import '../../data/plant_repository.dart';
 import '../../domain/plant_insight.dart';
+import '../../domain/predictive_care_engine.dart';
+import '../../models/ai_decision.dart';
 import '../../models/chat_message.dart';
 import '../../models/plant.dart';
 import '../../models/plant_reading.dart';
@@ -34,25 +39,33 @@ class _ChatScreenState extends State<ChatScreen> {
   final _scrollController = ScrollController();
   final _pendingMessages = <ChatMessage>[];
   final _localMessages = <ChatMessage>[];
-  final _claudeService = ClaudeService();
+  final _aiService = AiService();
   final _repository = PlantRepository();
   final _interpreter = PlantInterpreter();
+  final _predictiveEngine = PredictiveCareEngine();
+  final _imagePicker = ImagePicker();
 
   PlantReading? _latestReading;
+  List<PlantReading> _recentReadings = const <PlantReading>[];
+  List<_PendingImageAttachment> _pendingAttachments =
+      const <_PendingImageAttachment>[];
+  bool _photoAssistSuggested = false;
+  double? _lastAiConfidence;
   bool _isSending = false;
   bool _isClearing = false;
   bool _showScrollToBottom = false;
   bool _hasUnreadWhileAway = false;
   int _lastRenderedMessageCount = 0;
   StreamSubscription? _readingSub;
+  StreamSubscription? _historySub;
+  StreamSubscription? _aiDecisionSub;
   Timer? _routineTimer;
   Stream<List<ChatMessage>>? _messagesStream;
   ChatMessage? _fallbackAssistantMessage;
   PlantMood? _lastProactiveMood;
   DateTime? _lastProactiveAt;
   String? _lastProactivePlantId;
-  bool _routineEnabled = true;
-  DateTime? _nextRoutineAt;
+  final bool _routineEnabled = true;
   DateTime? _lastWaterRoutineAt;
   DateTime? _lastLightRoutineAt;
   DateTime? _lastTempRoutineAt;
@@ -60,6 +73,8 @@ class _ChatScreenState extends State<ChatScreen> {
   DateTime? _lastLightNotificationAt;
   DateTime? _lastTempNotificationAt;
   DateTime? _lastProactiveNotificationAt;
+  DateTime? _lastFollowUpNotificationAt;
+  int? _lastFollowUpDecisionId;
   static const _weekdayNames = [
     'Lunedi',
     'Martedi',
@@ -100,10 +115,13 @@ class _ChatScreenState extends State<ChatScreen> {
       _controller.clear();
       _pendingMessages.clear();
       _localMessages.clear();
+      _pendingAttachments = const <_PendingImageAttachment>[];
       _isSending = false;
       _fallbackAssistantMessage = null;
       _showScrollToBottom = false;
       _hasUnreadWhileAway = false;
+      _photoAssistSuggested = false;
+      _lastAiConfidence = null;
       _lastProactiveMood = null;
       _lastProactiveAt = null;
       _lastProactivePlantId = widget.selectedPlant?.id;
@@ -121,6 +139,8 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _readingSub?.cancel();
+    _historySub?.cancel();
+    _aiDecisionSub?.cancel();
     _routineTimer?.cancel();
     _scrollController.removeListener(_handleScroll);
     _controller.dispose();
@@ -128,19 +148,80 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
-  Future<void> _sendMessage() async {
-    final text = _controller.text.trim();
-    if (text.isEmpty || _isSending || _isClearing) {
+  Future<void> _retryLocalSync() async {
+    if (_isSending || _isClearing || widget.selectedPlant == null) {
       return;
     }
+    final unsyncedUsers = _localMessages.where((m) => m.isUser).toList();
+    if (unsyncedUsers.isEmpty) return;
+
+    setState(() => _isSending = true);
+    var successCount = 0;
+    for (final message in unsyncedUsers) {
+      final prediction = _predictiveEngine.predict(
+        readings: _recentReadings,
+        plant: widget.selectedPlant,
+      );
+      final result = await _aiService.generateReply(
+        message: message.text,
+        plant: widget.selectedPlant,
+        reading: _latestReading,
+        recentReadings: _recentReadings,
+        prediction: prediction.toMap(),
+      );
+      if (result.persisted) {
+        successCount++;
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isSending = false;
+      if (successCount == unsyncedUsers.length) {
+        _localMessages.clear();
+        _fallbackAssistantMessage = null;
+      }
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          successCount == unsyncedUsers.length
+              ? 'Messaggi sincronizzati.'
+              : 'Sincronizzati $successCount/${unsyncedUsers.length}.',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _sendMessage() async {
+    final text = _controller.text.trim();
+    final hasAttachments = _pendingAttachments.isNotEmpty;
+    if ((text.isEmpty && !hasAttachments) || _isSending || _isClearing) {
+      return;
+    }
+    final effectiveText = text.isEmpty
+        ? 'Analizza questa foto della pianta e dammi azioni concrete.'
+        : text;
+    final attachmentsToSend = List<_PendingImageAttachment>.from(
+      _pendingAttachments,
+    );
+    final imagePayload = attachmentsToSend
+        .map((item) => item.dataUrl)
+        .toList(growable: false);
+    final userMessageText = attachmentsToSend.isEmpty
+        ? effectiveText
+        : '[${attachmentsToSend.length} foto] $effectiveText';
 
     setState(() {
-      _pendingMessages.add(ChatMessage(
-        text: text,
-        isUser: true,
-        timestamp: DateTime.now(),
-      ));
+      _pendingMessages.add(
+        ChatMessage(
+          text: userMessageText,
+          isUser: true,
+          timestamp: DateTime.now(),
+        ),
+      );
       _controller.clear();
+      _pendingAttachments = const <_PendingImageAttachment>[];
       _isSending = true;
       _fallbackAssistantMessage = null;
     });
@@ -148,10 +229,17 @@ class _ChatScreenState extends State<ChatScreen> {
     _scheduleScrollToBottom(animated: true);
 
     try {
-      final result = await _claudeService.generateReply(
-        message: text,
+      final prediction = _predictiveEngine.predict(
+        readings: _recentReadings,
+        plant: widget.selectedPlant,
+      );
+      final result = await _aiService.generateReply(
+        message: effectiveText,
         plant: widget.selectedPlant,
         reading: _latestReading,
+        recentReadings: _recentReadings,
+        prediction: prediction.toMap(),
+        imageUrls: imagePayload,
       );
 
       if (!mounted) {
@@ -162,6 +250,10 @@ class _ChatScreenState extends State<ChatScreen> {
         final pendingUserMessages = List<ChatMessage>.from(_pendingMessages);
         _pendingMessages.clear();
         _isSending = false;
+        _photoAssistSuggested =
+            result.needsPhoto ||
+            (result.confidence != null && result.confidence! < 0.62);
+        _lastAiConfidence = result.confidence;
         final trimmedReply = result.reply.trim();
         if (result.persisted) {
           if (trimmedReply.isNotEmpty) {
@@ -177,11 +269,13 @@ class _ChatScreenState extends State<ChatScreen> {
         _fallbackAssistantMessage = null;
         _localMessages.addAll(pendingUserMessages);
         if (trimmedReply.isNotEmpty) {
-          _localMessages.add(ChatMessage(
-            text: trimmedReply,
-            isUser: false,
-            timestamp: DateTime.now(),
-          ));
+          _localMessages.add(
+            ChatMessage(
+              text: trimmedReply,
+              isUser: false,
+              timestamp: DateTime.now(),
+            ),
+          );
         } else {
           _fallbackAssistantMessage = ChatMessage(
             text: 'Messaggio non salvato. Verifica la connessione e riprova.',
@@ -198,11 +292,13 @@ class _ChatScreenState extends State<ChatScreen> {
         final pendingUserMessages = List<ChatMessage>.from(_pendingMessages);
         _pendingMessages.clear();
         _localMessages.addAll(pendingUserMessages);
-        _localMessages.add(ChatMessage(
-          text: 'Errore di rete. Riprova tra qualche secondo.',
-          isUser: false,
-          timestamp: DateTime.now(),
-        ));
+        _localMessages.add(
+          ChatMessage(
+            text: 'Errore di rete. Riprova tra qualche secondo.',
+            isUser: false,
+            timestamp: DateTime.now(),
+          ),
+        );
         _isSending = false;
         _fallbackAssistantMessage = null;
       });
@@ -300,6 +396,62 @@ class _ChatScreenState extends State<ChatScreen> {
     ).showSnackBar(const SnackBar(content: Text('Aggiornato ora')));
   }
 
+  Future<void> _addPhotoAttachment() async {
+    if (_isSending || _isClearing || widget.selectedPlant == null) {
+      return;
+    }
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt_outlined),
+              title: const Text('Scatta foto'),
+              onTap: () => Navigator.of(context).pop(ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Scegli da galleria'),
+              onTap: () => Navigator.of(context).pop(ImageSource.gallery),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (source == null) return;
+
+    final picked = await _imagePicker.pickImage(
+      source: source,
+      imageQuality: 82,
+      maxWidth: 1600,
+    );
+    if (picked == null) return;
+
+    final bytes = await picked.readAsBytes();
+    final base64Data = base64Encode(bytes);
+    final mime = _mimeTypeForPath(picked.path);
+    final attachment = _PendingImageAttachment(
+      dataUrl: 'data:$mime;base64,$base64Data',
+      fileName: picked.name,
+    );
+
+    if (!mounted) return;
+    setState(() {
+      final updated = [..._pendingAttachments, attachment];
+      _pendingAttachments = updated.take(4).toList(growable: false);
+      _photoAssistSuggested = true;
+    });
+  }
+
+  String _mimeTypeForPath(String path) {
+    final lower = path.toLowerCase();
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    return 'image/jpeg';
+  }
+
   void _scheduleScrollToBottom({required bool animated}) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollController.hasClients) {
@@ -363,12 +515,12 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
               child: Container(
-                padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
                 decoration: BoxDecoration(
                   color: const Color(0xFFF7F5F0),
-                  borderRadius: BorderRadius.circular(24),
+                  borderRadius: BorderRadius.circular(20),
                   border: Border.all(
                     color: const Color(0xFFF0ECE4),
                     width: 1.2,
@@ -386,36 +538,22 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
-              child: _RoutinePanel(
-                enabled: _routineEnabled,
-                nextCheckAt: _nextRoutineAt,
-                water: _routineCheckForWater(widget.selectedPlant, _latestReading),
-                light: _routineCheckForLight(widget.selectedPlant, _latestReading),
-                temperature: _routineCheckForTemperature(_latestReading),
-                onToggle: _setRoutineEnabled,
-                onRunNow: () {
-                  _runRoutineChecks(force: true);
-                  _scheduleScrollToBottom(animated: true);
-                },
-              ),
-            ),
             if (_localMessages.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
                 child: _LocalSyncBanner(
                   count: _localMessages.where((m) => m.isUser).length,
+                  onRetry: _retryLocalSync,
                 ),
               ),
             Expanded(
               child: Container(
                 decoration: BoxDecoration(
                   color: AppColors.card,
-                  borderRadius: BorderRadius.circular(28),
+                  borderRadius: BorderRadius.circular(22),
                   border: Border.all(color: AppColors.outline),
                 ),
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
                 child: StreamBuilder<List<ChatMessage>>(
                   stream: _messagesStream,
                   builder: (context, snapshot) {
@@ -452,7 +590,9 @@ class _ChatScreenState extends State<ChatScreen> {
                     }
 
                     if (combined.isEmpty && !_isSending) {
-                      return _EmptyState(onStartPlantUpdate: _requestProactiveUpdate);
+                      return _EmptyState(
+                        onStartPlantUpdate: _requestProactiveUpdate,
+                      );
                     }
 
                     return Stack(
@@ -520,7 +660,9 @@ class _ChatScreenState extends State<ChatScreen> {
                                       _scheduleScrollToBottom(animated: true),
                                   backgroundColor: const Color(0xFF2A3038),
                                   foregroundColor: Colors.white,
-                                  child: const Icon(Icons.arrow_downward_rounded),
+                                  child: const Icon(
+                                    Icons.arrow_downward_rounded,
+                                  ),
                                 ),
                               ],
                             ),
@@ -536,6 +678,19 @@ class _ChatScreenState extends State<ChatScreen> {
               isSending: _isSending,
               isClearing: _isClearing,
               hasPlant: widget.selectedPlant != null,
+              attachments: _pendingAttachments,
+              showAddPhotoAction: widget.selectedPlant != null,
+              showPhotoHint:
+                  _photoAssistSuggested || _pendingAttachments.isNotEmpty,
+              confidence: _lastAiConfidence,
+              onAddPhoto: _addPhotoAttachment,
+              onClearAttachment: (id) {
+                setState(() {
+                  _pendingAttachments = _pendingAttachments
+                      .where((item) => item.id != id)
+                      .toList(growable: false);
+                });
+              },
               onSend: _sendMessage,
               onNudgePlant: _requestProactiveUpdate,
             ),
@@ -554,9 +709,14 @@ class _ChatScreenState extends State<ChatScreen> {
     if (plant == null) {
       _messagesStream = null;
       _readingSub?.cancel();
+      _historySub?.cancel();
       _latestReading = null;
+      _recentReadings = const <PlantReading>[];
       _localMessages.clear();
       _pendingMessages.clear();
+      _pendingAttachments = const <_PendingImageAttachment>[];
+      _photoAssistSuggested = false;
+      _lastAiConfidence = null;
       _fallbackAssistantMessage = null;
       _hasUnreadWhileAway = false;
       _lastWaterNotificationAt = null;
@@ -576,29 +736,56 @@ class _ChatScreenState extends State<ChatScreen> {
       _maybeStartConversationFromReading(reading);
       _runRoutineChecks();
     });
+
+    _historySub?.cancel();
+    _historySub = _repository
+        .recentReadings(limit: 72, plantId: plant.id)
+        .listen((history) {
+          if (!mounted) return;
+          setState(() => _recentReadings = history);
+        });
+
+    _aiDecisionSub?.cancel();
+    _aiDecisionSub = _repository
+        .recentAiDecisions(plantId: plant.id, limit: 12)
+        .listen((decisions) {
+          _checkDueFollowUps(plant.name, decisions);
+        });
+  }
+
+  void _checkDueFollowUps(String plantName, List<AiDecision> decisions) {
+    final now = DateTime.now();
+    final due = decisions
+        .where((d) {
+          return d.outcome == null &&
+              d.followUpDueAt != null &&
+              d.followUpDueAt!.isBefore(now);
+        })
+        .toList(growable: false);
+    if (due.isEmpty) return;
+
+    final target = due.first;
+    if (_lastFollowUpDecisionId == target.id &&
+        _lastFollowUpNotificationAt != null &&
+        now.difference(_lastFollowUpNotificationAt!) <
+            const Duration(hours: 8)) {
+      return;
+    }
+    _lastFollowUpDecisionId = target.id;
+    _lastFollowUpNotificationAt = now;
+    NotificationService.instance.showRoutineAlert(
+      title: '$plantName · Follow-up',
+      body:
+          'Aggiorna esito ultima decisione AI (migliorata/uguale/peggiorata).',
+    );
   }
 
   void _startRoutineScheduler() {
     _routineTimer?.cancel();
-    _nextRoutineAt = DateTime.now().add(const Duration(minutes: 6));
     _routineTimer = Timer.periodic(const Duration(minutes: 2), (_) {
       if (!mounted || !_routineEnabled) return;
       _runRoutineChecks();
-      setState(() {
-        _nextRoutineAt = DateTime.now().add(const Duration(minutes: 6));
-      });
     });
-  }
-
-  void _setRoutineEnabled(bool enabled) {
-    setState(() => _routineEnabled = enabled);
-    if (!enabled) {
-      _routineTimer?.cancel();
-      _nextRoutineAt = null;
-      return;
-    }
-    _startRoutineScheduler();
-    _runRoutineChecks(force: true);
   }
 
   void _runRoutineChecks({bool force = false}) {
@@ -613,11 +800,17 @@ class _ChatScreenState extends State<ChatScreen> {
     const tempCooldown = Duration(minutes: 90);
 
     final waterDue =
-        force || _lastWaterRoutineAt == null || now.difference(_lastWaterRoutineAt!) >= waterCooldown;
+        force ||
+        _lastWaterRoutineAt == null ||
+        now.difference(_lastWaterRoutineAt!) >= waterCooldown;
     final lightDue =
-        force || _lastLightRoutineAt == null || now.difference(_lastLightRoutineAt!) >= lightCooldown;
+        force ||
+        _lastLightRoutineAt == null ||
+        now.difference(_lastLightRoutineAt!) >= lightCooldown;
     final tempDue =
-        force || _lastTempRoutineAt == null || now.difference(_lastTempRoutineAt!) >= tempCooldown;
+        force ||
+        _lastTempRoutineAt == null ||
+        now.difference(_lastTempRoutineAt!) >= tempCooldown;
 
     final voice = _voiceForPlant(plant);
 
@@ -675,11 +868,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final lastAssistant = _lastAssistantText();
     if (lastAssistant == normalized) return;
     setState(() {
-      _localMessages.add(ChatMessage(
-        text: normalized,
-        isUser: false,
-        timestamp: timestamp,
-      ));
+      _localMessages.add(
+        ChatMessage(text: normalized, isUser: false, timestamp: timestamp),
+      );
     });
   }
 
@@ -693,11 +884,17 @@ class _ChatScreenState extends State<ChatScreen> {
 
   String _temperatureComment(double temp) {
     if (temp < 16) return 'Sento freddo, proteggimi nelle ore serali.';
-    if (temp > 30) return 'Fa caldo, meglio evitare sole diretto nelle ore forti.';
+    if (temp > 30) {
+      return 'Fa caldo, meglio evitare sole diretto nelle ore forti.';
+    }
     return 'Temperatura nella mia zona comfort.';
   }
 
-  void _notifyProactiveAlertIfNeeded(String plantName, PlantMood mood, String body) {
+  void _notifyProactiveAlertIfNeeded(
+    String plantName,
+    PlantMood mood,
+    String body,
+  ) {
     if (!(mood == PlantMood.thirsty ||
         mood == PlantMood.dark ||
         mood == PlantMood.stressed)) {
@@ -743,71 +940,26 @@ class _ChatScreenState extends State<ChatScreen> {
     NotificationService.instance.showRoutineAlert(title: title, body: body);
   }
 
-  _RoutineCheckState _routineCheckForWater(Plant? plant, PlantReading? reading) {
-    if (reading == null || plant == null) {
-      return const _RoutineCheckState.waiting('In attesa');
-    }
-    if (reading.moisture < plant.effectiveMoistureLow) {
-      return _RoutineCheckState.alert('Bassa', '${reading.moisture.toStringAsFixed(0)}%');
-    }
-    if (reading.moisture > plant.effectiveMoistureHigh) {
-      return _RoutineCheckState.alert('Alta', '${reading.moisture.toStringAsFixed(0)}%');
-    }
-    return _RoutineCheckState.ok('Ok', '${reading.moisture.toStringAsFixed(0)}%');
-  }
-
-  _RoutineCheckState _routineCheckForLight(Plant? plant, PlantReading? reading) {
-    if (reading == null || plant == null) {
-      return const _RoutineCheckState.waiting('In attesa');
-    }
-    if (reading.lux < plant.effectiveLuxLow) {
-      return _RoutineCheckState.alert('Bassa', '${reading.lux.toStringAsFixed(0)} lx');
-    }
-    if (reading.lux > plant.effectiveLuxHigh) {
-      return _RoutineCheckState.alert('Alta', '${reading.lux.toStringAsFixed(0)} lx');
-    }
-    return _RoutineCheckState.ok('Ok', '${reading.lux.toStringAsFixed(0)} lx');
-  }
-
-  _RoutineCheckState _routineCheckForTemperature(PlantReading? reading) {
-    if (reading == null) {
-      return const _RoutineCheckState.waiting('In attesa');
-    }
-    if (reading.temperature == null) {
-      return const _RoutineCheckState.waiting('No sensore');
-    }
-    final t = reading.temperature!;
-    if (t < 16 || t > 30) {
-      return _RoutineCheckState.alert('Fuori range', '${t.toStringAsFixed(1)}°C');
-    }
-    return _RoutineCheckState.ok('Ok', '${t.toStringAsFixed(1)}°C');
-  }
-
   _PlantVoice _voiceForPlant(Plant plant) {
     final personality = plant.personality.toLowerCase();
     if (personality.contains('iron')) {
-      return const _PlantVoice(
-        lead: 'Ehi',
-      );
+      return const _PlantVoice(lead: 'Ehi');
     }
     if (personality.contains('poetic') ||
         personality.contains('poetica') ||
         personality.contains('poet')) {
-      return const _PlantVoice(
-        lead: 'Piccolo aggiornamento',
-      );
+      return const _PlantVoice(lead: 'Piccolo aggiornamento');
     }
     if (personality.contains('energ') || personality.contains('vivace')) {
-      return const _PlantVoice(
-        lead: 'Hey',
-      );
+      return const _PlantVoice(lead: 'Hey');
     }
-    return const _PlantVoice(
-      lead: 'Ciao',
-    );
+    return const _PlantVoice(lead: 'Ciao');
   }
 
-  void _maybeStartConversationFromReading(PlantReading? reading, {bool force = false}) {
+  void _maybeStartConversationFromReading(
+    PlantReading? reading, {
+    bool force = false,
+  }) {
     final plant = widget.selectedPlant;
     if (plant == null) {
       return;
@@ -823,7 +975,8 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     if (!force) {
-      final tooSoon = _lastProactiveAt != null &&
+      final tooSoon =
+          _lastProactiveAt != null &&
           now.difference(_lastProactiveAt!).inMinutes < 20;
       final sameMood = _lastProactiveMood == insight.mood;
       if (tooSoon || sameMood || !critical) {
@@ -843,11 +996,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     setState(() {
       _localMessages.add(
-        ChatMessage(
-          text: text,
-          isUser: false,
-          timestamp: now,
-        ),
+        ChatMessage(text: text, isUser: false, timestamp: now),
       );
       _lastProactiveMood = insight.mood;
       _lastProactiveAt = now;
@@ -857,7 +1006,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   String _proactiveTextFor(PlantInsight insight, PlantReading? reading) {
     final plant = widget.selectedPlant;
-    final voice = plant != null ? _voiceForPlant(plant) : const _PlantVoice(lead: 'Ciao');
+    final voice = plant != null
+        ? _voiceForPlant(plant)
+        : const _PlantVoice(lead: 'Ciao');
     if (reading == null) {
       return '${voice.lead}, ti aggiorno io appena ricevo nuovi dati dai sensori.';
     }
@@ -882,7 +1033,8 @@ class _ChatScreenState extends State<ChatScreen> {
       return true;
     }
     final distanceFromBottom =
-        _scrollController.position.maxScrollExtent - _scrollController.position.pixels;
+        _scrollController.position.maxScrollExtent -
+        _scrollController.position.pixels;
     return distanceFromBottom < 120;
   }
 
@@ -896,9 +1048,7 @@ class _ChatScreenState extends State<ChatScreen> {
         message.timestamp.day,
       );
       if (lastDay == null || day != lastDay) {
-        entries.add(
-          _ChatEntry.dayDivider(_formatDayDivider(day)),
-        );
+        entries.add(_ChatEntry.dayDivider(_formatDayDivider(day)));
         lastDay = day;
       }
       entries.add(_ChatEntry.message(message));
@@ -914,9 +1064,10 @@ class _ChatScreenState extends State<ChatScreen> {
 }
 
 class _LocalSyncBanner extends StatelessWidget {
-  const _LocalSyncBanner({required this.count});
+  const _LocalSyncBanner({required this.count, required this.onRetry});
 
   final int count;
+  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -935,174 +1086,23 @@ class _LocalSyncBanner extends StatelessWidget {
           Expanded(
             child: Text(
               count > 0
-                  ? '$count messaggi non sincronizzati. Verranno reinviati quando torni online.'
+                  ? '$count messaggi non sincronizzati.'
                   : 'Risposte locali non sincronizzate.',
               style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                    color: const Color(0xFF6C4D3C),
-                    fontWeight: FontWeight.w600,
-                  ),
+                color: const Color(0xFF6C4D3C),
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
+          TextButton(onPressed: onRetry, child: const Text('Riprova sync')),
         ],
       ),
     );
   }
-}
-
-class _RoutinePanel extends StatelessWidget {
-  const _RoutinePanel({
-    required this.enabled,
-    required this.nextCheckAt,
-    required this.water,
-    required this.light,
-    required this.temperature,
-    required this.onToggle,
-    required this.onRunNow,
-  });
-
-  final bool enabled;
-  final DateTime? nextCheckAt;
-  final _RoutineCheckState water;
-  final _RoutineCheckState light;
-  final _RoutineCheckState temperature;
-  final ValueChanged<bool> onToggle;
-  final VoidCallback onRunNow;
-
-  @override
-  Widget build(BuildContext context) {
-    final nextText = nextCheckAt == null
-        ? 'Pausa'
-        : DateFormat('HH:mm').format(nextCheckAt!);
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF6F2EB),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE3DBCF)),
-      ),
-      child: Column(
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.schedule, size: 17, color: Color(0xFF3E434D)),
-              const SizedBox(width: 6),
-              Text(
-                'Routine della pianta',
-                style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      color: const Color(0xFF2F333B),
-                      fontWeight: FontWeight.w700,
-                    ),
-              ),
-              const Spacer(),
-              Switch.adaptive(
-                value: enabled,
-                onChanged: onToggle,
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Row(
-            children: [
-              Expanded(child: _RoutineChip(label: 'Acqua', state: water)),
-              const SizedBox(width: 6),
-              Expanded(child: _RoutineChip(label: 'Luce', state: light)),
-              const SizedBox(width: 6),
-              Expanded(child: _RoutineChip(label: 'Temp', state: temperature)),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Text(
-                'Prossimo check: $nextText',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: const Color(0xFF646058),
-                    ),
-              ),
-              const Spacer(),
-              TextButton(
-                onPressed: enabled ? onRunNow : null,
-                child: const Text('Esegui ora'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _RoutineChip extends StatelessWidget {
-  const _RoutineChip({
-    required this.label,
-    required this.state,
-  });
-
-  final String label;
-  final _RoutineCheckState state;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
-      decoration: BoxDecoration(
-        color: state.background,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: state.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: state.text,
-                  fontWeight: FontWeight.w700,
-                ),
-          ),
-          const SizedBox(height: 1),
-          Text(
-            '${state.label}${state.value == null ? '' : ' · ${state.value}'}',
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: state.text.withValues(alpha: 0.86),
-                ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _RoutineCheckState {
-  const _RoutineCheckState.ok(this.label, this.value)
-      : background = const Color(0xFFE8EEE8),
-        border = const Color(0xFFC9D4C8),
-        text = const Color(0xFF2F4A33);
-
-  const _RoutineCheckState.alert(this.label, this.value)
-      : background = const Color(0xFFF3E5DF),
-        border = const Color(0xFFE0BFB2),
-        text = const Color(0xFF6A4033);
-
-  const _RoutineCheckState.waiting(this.label)
-      : value = null,
-        background = const Color(0xFFECEAE4),
-        border = const Color(0xFFDCD5C9),
-        text = const Color(0xFF58554E);
-
-  final String label;
-  final String? value;
-  final Color background;
-  final Color border;
-  final Color text;
 }
 
 class _PlantVoice {
-  const _PlantVoice({
-    required this.lead,
-  });
+  const _PlantVoice({required this.lead});
 
   final String lead;
 }
@@ -1146,7 +1146,9 @@ class _ChatHeader extends StatelessWidget {
             children: [
               Text(
                 title,
-                style: Theme.of(context).textTheme.headlineSmall,
+                style: Theme.of(
+                  context,
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
@@ -1388,6 +1390,10 @@ class _ChatBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final maxBubbleWidth = math.min(
+      MediaQuery.sizeOf(context).width * 0.82,
+      460.0,
+    );
     final alignment = message.isUser
         ? Alignment.centerRight
         : Alignment.centerLeft;
@@ -1407,7 +1413,7 @@ class _ChatBubble extends StatelessWidget {
           bottom: groupedWithNext ? 2 : 8,
         ),
         padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
-        constraints: const BoxConstraints(maxWidth: 300),
+        constraints: BoxConstraints(maxWidth: maxBubbleWidth),
         decoration: BoxDecoration(
           color: bubbleColor,
           borderRadius: BorderRadius.only(
@@ -1450,7 +1456,7 @@ class _ChatBubble extends StatelessWidget {
               message.text,
               style: Theme.of(
                 context,
-              ).textTheme.bodyMedium?.copyWith(color: textColor),
+              ).textTheme.bodyLarge?.copyWith(color: textColor, height: 1.3),
             ),
             if (!groupedWithNext) ...[
               const SizedBox(height: 6),
@@ -1482,9 +1488,7 @@ class _DayDivider extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(0, 12, 0, 8),
       child: Row(
         children: [
-          const Expanded(
-            child: Divider(color: Color(0xFFDAD4C8), height: 1),
-          ),
+          const Expanded(child: Divider(color: Color(0xFFDAD4C8), height: 1)),
           Container(
             margin: const EdgeInsets.symmetric(horizontal: 10),
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -1496,14 +1500,12 @@ class _DayDivider extends StatelessWidget {
             child: Text(
               label,
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: const Color(0xFF5C5952),
-                    fontWeight: FontWeight.w600,
-                  ),
+                color: const Color(0xFF5C5952),
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
-          const Expanded(
-            child: Divider(color: Color(0xFFDAD4C8), height: 1),
-          ),
+          const Expanded(child: Divider(color: Color(0xFFDAD4C8), height: 1)),
         ],
       ),
     );
@@ -1582,6 +1584,12 @@ class _ChatInput extends StatelessWidget {
     required this.isSending,
     required this.isClearing,
     required this.hasPlant,
+    required this.attachments,
+    required this.showAddPhotoAction,
+    required this.showPhotoHint,
+    required this.confidence,
+    required this.onAddPhoto,
+    required this.onClearAttachment,
     required this.onSend,
     required this.onNudgePlant,
   });
@@ -1590,14 +1598,21 @@ class _ChatInput extends StatelessWidget {
   final bool isSending;
   final bool isClearing;
   final bool hasPlant;
+  final List<_PendingImageAttachment> attachments;
+  final bool showAddPhotoAction;
+  final bool showPhotoHint;
+  final double? confidence;
+  final VoidCallback onAddPhoto;
+  final ValueChanged<String> onClearAttachment;
   final VoidCallback onSend;
   final VoidCallback onNudgePlant;
 
   @override
   Widget build(BuildContext context) {
     final isDisabled = isSending || isClearing || !hasPlant;
+    final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
+      padding: EdgeInsets.fromLTRB(12, 8, 12, math.max(10, bottomInset)),
       decoration: BoxDecoration(
         color: AppColors.background,
         border: Border(top: BorderSide(color: AppColors.outline)),
@@ -1605,25 +1620,106 @@ class _ChatInput extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Padding(
+          if (attachments.isNotEmpty)
+            Padding(
               padding: const EdgeInsets.only(bottom: 8),
-              child: TextButton.icon(
-                onPressed: isDisabled ? null : onNudgePlant,
-                icon: const Icon(Icons.campaign_outlined, size: 18),
-                label: const Text('Fai iniziare la pianta'),
+              child: SizedBox(
+                height: 32,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemBuilder: (context, index) {
+                    final attachment = attachments[index];
+                    return Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFECE7DD),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(color: const Color(0xFFDDD5C7)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.image_outlined, size: 14),
+                          const SizedBox(width: 6),
+                          Text(
+                            attachment.fileName,
+                            style: Theme.of(context).textTheme.labelSmall,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(width: 6),
+                          GestureDetector(
+                            onTap: () => onClearAttachment(attachment.id),
+                            child: const Icon(Icons.close, size: 14),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                  separatorBuilder: (_, _) => const SizedBox(width: 6),
+                  itemCount: attachments.length,
+                ),
               ),
             ),
-          ),
+          if (showPhotoHint && attachments.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF2E8DF),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: const Color(0xFFE0CDBF)),
+                  ),
+                  child: Text(
+                    confidence != null
+                        ? 'Confidenza ${(confidence! * 100).round()}%: aggiungi foto per verifica.'
+                        : 'Aggiungi foto per migliorare l\'analisi.',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: const Color(0xFF6C4D3C),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ),
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
+              IconButton(
+                onPressed: isDisabled ? null : onNudgePlant,
+                tooltip: 'Fai iniziare la pianta',
+                icon: const Icon(Icons.campaign_outlined),
+                style: IconButton.styleFrom(
+                  backgroundColor: const Color(0xFFECE7DD),
+                  minimumSize: const Size(44, 44),
+                ),
+              ),
+              const SizedBox(width: 8),
+              if (showAddPhotoAction) ...[
+                IconButton(
+                  onPressed: isDisabled ? null : onAddPhoto,
+                  tooltip: 'Aggiungi foto',
+                  icon: const Icon(Icons.add_a_photo_outlined),
+                  style: IconButton.styleFrom(
+                    backgroundColor: const Color(0xFFECE7DD),
+                    minimumSize: const Size(44, 44),
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ],
               Expanded(
                 child: TextField(
                   controller: controller,
                   minLines: 1,
-                  maxLines: 4,
+                  maxLines: 6,
                   enabled: !isDisabled,
                   textInputAction: TextInputAction.send,
                   onSubmitted: (_) => onSend(),
@@ -1644,7 +1740,7 @@ class _ChatInput extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(width: 12),
+              const SizedBox(width: 8),
               IconButton.filled(
                 onPressed: isDisabled ? null : onSend,
                 style: IconButton.styleFrom(
@@ -1670,20 +1766,39 @@ class _ChatInput extends StatelessWidget {
   }
 }
 
+class _PendingImageAttachment {
+  const _PendingImageAttachment._({
+    required this.id,
+    required this.dataUrl,
+    required this.fileName,
+  });
+
+  factory _PendingImageAttachment({
+    required String dataUrl,
+    required String fileName,
+  }) {
+    return _PendingImageAttachment._(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      dataUrl: dataUrl,
+      fileName: fileName,
+    );
+  }
+
+  final String id;
+  final String dataUrl;
+  final String fileName;
+}
+
 enum _ChatEntryKind { dayDivider, message }
 
 class _ChatEntry {
-  const _ChatEntry._({
-    required this.kind,
-    this.label,
-    this.message,
-  });
+  const _ChatEntry._({required this.kind, this.label, this.message});
 
   const _ChatEntry.dayDivider(String label)
-      : this._(kind: _ChatEntryKind.dayDivider, label: label);
+    : this._(kind: _ChatEntryKind.dayDivider, label: label);
 
   const _ChatEntry.message(ChatMessage message)
-      : this._(kind: _ChatEntryKind.message, message: message);
+    : this._(kind: _ChatEntryKind.message, message: message);
 
   final _ChatEntryKind kind;
   final String? label;

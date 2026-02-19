@@ -7,6 +7,7 @@ import '../../data/plant_repository.dart';
 import '../../domain/plant_insight.dart';
 import '../../models/plant.dart';
 import '../../models/plant_reading.dart';
+import 'predictive_care_card.dart';
 import '../../widgets/plant_avatar.dart';
 import '../../widgets/plant_picker_sheet.dart';
 import '../../widgets/plant_state_art.dart';
@@ -111,7 +112,12 @@ class _DashboardLayout extends StatelessWidget {
         ),
       ),
       child: Padding(
-        padding: EdgeInsets.fromLTRB(isCompact ? 12 : 16, 12, isCompact ? 12 : 16, 18),
+        padding: EdgeInsets.fromLTRB(
+          isCompact ? 12 : 16,
+          12,
+          isCompact ? 12 : 16,
+          18,
+        ),
         child: Column(
           children: [
             _DashboardTopBar(
@@ -176,6 +182,15 @@ class _DashboardLayout extends StatelessWidget {
                     ),
                     const SizedBox(height: 12),
                     _SectionReveal(
+                      delayMs: 210,
+                      urgent: isCriticalMood,
+                      child: PredictiveCareCard(
+                        plant: selectedPlant,
+                        readings: recentReadings,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    _SectionReveal(
                       delayMs: 240,
                       urgent: isCriticalMood,
                       child: _TrendCard(
@@ -190,7 +205,9 @@ class _DashboardLayout extends StatelessWidget {
                       delayMs: 300,
                       urgent: isCriticalMood,
                       child: _TimelineCard(
-                        readings: recentReadings.take(8).toList(growable: false),
+                        readings: recentReadings
+                            .take(8)
+                            .toList(growable: false),
                         textTheme: theme.textTheme,
                       ),
                     ),
@@ -411,7 +428,12 @@ class _HeroStateCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: EdgeInsets.fromLTRB(14, compact ? 12 : 14, 14, compact ? 14 : 16),
+      padding: EdgeInsets.fromLTRB(
+        14,
+        compact ? 12 : 14,
+        14,
+        compact ? 14 : 16,
+      ),
       decoration: BoxDecoration(
         color: const Color(0xFFF8F6F2),
         borderRadius: BorderRadius.circular(28),
@@ -521,7 +543,9 @@ class _HeroStateCard extends StatelessWidget {
             child: FilledButton.icon(
               onPressed: onOpenChat,
               icon: const Icon(Icons.chat_bubble_outline),
-              label: Text(compact ? 'Azione consigliata' : 'Cosa devo fare ora?'),
+              label: Text(
+                compact ? 'Azione consigliata' : 'Cosa devo fare ora?',
+              ),
             ),
           ),
         ],
@@ -693,10 +717,7 @@ class _ScoreRing extends StatelessWidget {
 }
 
 class _WarningPulse extends StatefulWidget {
-  const _WarningPulse({
-    required this.enabled,
-    required this.child,
-  });
+  const _WarningPulse({required this.enabled, required this.child});
 
   final bool enabled;
   final Widget child;
@@ -876,11 +897,7 @@ class _SensorPanel extends StatelessWidget {
     ];
     if (compact) {
       return Column(
-        children: [
-          cards.first,
-          const SizedBox(height: 10),
-          cards.last,
-        ],
+        children: [cards.first, const SizedBox(height: 10), cards.last],
       );
     }
     return Row(
@@ -921,7 +938,12 @@ class _GaugeCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: EdgeInsets.fromLTRB(12, compact ? 10 : 12, 12, compact ? 10 : 12),
+      padding: EdgeInsets.fromLTRB(
+        12,
+        compact ? 10 : 12,
+        12,
+        compact ? 10 : 12,
+      ),
       decoration: BoxDecoration(
         color: const Color(0xFFF8F6F2),
         borderRadius: BorderRadius.circular(20),
@@ -947,10 +969,10 @@ class _GaugeCard extends StatelessWidget {
           Text(
             value,
             style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  color: const Color(0xFF20252D),
-                  fontWeight: FontWeight.w700,
-                  fontSize: compact ? 22 : null,
-                ),
+              color: const Color(0xFF20252D),
+              fontWeight: FontWeight.w700,
+              fontSize: compact ? 22 : null,
+            ),
           ),
           const SizedBox(height: 2),
           Text(
@@ -1000,7 +1022,9 @@ class _QuickActionsRow extends StatelessWidget {
         compact: compact,
         onTap: () {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Evento salvato nella timeline locale.')),
+            const SnackBar(
+              content: Text('Evento salvato nella timeline locale.'),
+            ),
           );
         },
       ),
@@ -1022,7 +1046,12 @@ class _QuickActionsRow extends StatelessWidget {
         spacing: 8,
         runSpacing: 8,
         children: actions
-            .map((tile) => SizedBox(width: (MediaQuery.sizeOf(context).width - 40) / 2, child: tile))
+            .map(
+              (tile) => SizedBox(
+                width: (MediaQuery.sizeOf(context).width - 40) / 2,
+                child: tile,
+              ),
+            )
             .toList(growable: false),
       );
     }
@@ -1057,7 +1086,10 @@ class _ActionTile extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(16),
       child: Ink(
-        padding: EdgeInsets.symmetric(vertical: compact ? 10 : 12, horizontal: 10),
+        padding: EdgeInsets.symmetric(
+          vertical: compact ? 10 : 12,
+          horizontal: 10,
+        ),
         decoration: BoxDecoration(
           color: const Color(0xFFEFEAE2),
           borderRadius: BorderRadius.circular(16),
@@ -1465,7 +1497,9 @@ class _SectionRevealState extends State<_SectionReveal> {
     final opacityDuration = Duration(milliseconds: widget.urgent ? 200 : 320);
     final slideDuration = Duration(milliseconds: widget.urgent ? 240 : 380);
     final curve = widget.urgent ? Curves.easeOutQuad : Curves.easeOutCubic;
-    final initialOffset = widget.urgent ? const Offset(0, 0.02) : const Offset(0, 0.04);
+    final initialOffset = widget.urgent
+        ? const Offset(0, 0.02)
+        : const Offset(0, 0.04);
 
     return AnimatedOpacity(
       duration: opacityDuration,
