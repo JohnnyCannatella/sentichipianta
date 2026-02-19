@@ -75,6 +75,8 @@ class _ChatScreenState extends State<ChatScreen> {
   DateTime? _lastProactiveNotificationAt;
   DateTime? _lastFollowUpNotificationAt;
   int? _lastFollowUpDecisionId;
+  DateTime? _lastRoutineSummaryAt;
+  String? _lastRoutineSummaryKey;
   static const _weekdayNames = [
     'Lunedi',
     'Martedi',
@@ -132,6 +134,8 @@ class _ChatScreenState extends State<ChatScreen> {
       _lastLightNotificationAt = null;
       _lastTempNotificationAt = null;
       _lastProactiveNotificationAt = null;
+      _lastRoutineSummaryAt = null;
+      _lastRoutineSummaryKey = null;
       _lastRenderedMessageCount = 0;
     }
   }
@@ -503,6 +507,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final unsyncedUserCount = _localMessages.where((m) => m.isUser).length;
     return SafeArea(
       child: Container(
         decoration: const BoxDecoration(
@@ -538,11 +543,11 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             ),
-            if (_localMessages.isNotEmpty)
+            if (unsyncedUserCount > 0)
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
                 child: _LocalSyncBanner(
-                  count: _localMessages.where((m) => m.isUser).length,
+                  count: unsyncedUserCount,
                   onRetry: _retryLocalSync,
                 ),
               ),
@@ -723,6 +728,8 @@ class _ChatScreenState extends State<ChatScreen> {
       _lastLightNotificationAt = null;
       _lastTempNotificationAt = null;
       _lastProactiveNotificationAt = null;
+      _lastRoutineSummaryAt = null;
+      _lastRoutineSummaryKey = null;
       return;
     }
 
@@ -795,9 +802,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (plant == null) return;
 
     final now = DateTime.now();
-    const waterCooldown = Duration(minutes: 40);
-    const lightCooldown = Duration(minutes: 40);
-    const tempCooldown = Duration(minutes: 90);
+    const waterCooldown = Duration(minutes: 90);
+    const lightCooldown = Duration(minutes: 90);
+    const tempCooldown = Duration(minutes: 180);
 
     final waterDue =
         force ||
@@ -814,11 +821,18 @@ class _ChatScreenState extends State<ChatScreen> {
 
     final voice = _voiceForPlant(plant);
 
+    final routineAlerts = <String>[];
+
     if (reading != null && waterDue) {
-      final waterText = reading.moisture < plant.effectiveMoistureLow
-          ? '${voice.lead} Routine acqua: umidita al ${reading.moisture.toStringAsFixed(0)}%. Mi aiuti con irrigazione leggera?'
-          : '${voice.lead} Routine acqua: siamo a ${reading.moisture.toStringAsFixed(0)}%, tutto sotto controllo.';
-      _appendLocalAssistantUnique(waterText, now);
+      if (reading.moisture < plant.effectiveMoistureLow) {
+        routineAlerts.add(
+          'acqua bassa (${reading.moisture.toStringAsFixed(0)}%), serve irrigazione leggera',
+        );
+      } else if (reading.moisture > plant.effectiveMoistureHigh) {
+        routineAlerts.add(
+          'suolo troppo umido (${reading.moisture.toStringAsFixed(0)}%), meglio attendere',
+        );
+      }
       _lastWaterRoutineAt = now;
       if (reading.moisture < plant.effectiveMoistureLow) {
         _notifyRoutineIfNeeded(
@@ -830,10 +844,15 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     if (reading != null && lightDue) {
-      final lightText = reading.lux < plant.effectiveLuxLow
-          ? '${voice.lead} Routine luce: siamo a ${reading.lux.toStringAsFixed(0)} lx, un po bassi. Possiamo cercare piu luce?'
-          : '${voice.lead} Routine luce: ${reading.lux.toStringAsFixed(0)} lx, esposizione buona.';
-      _appendLocalAssistantUnique(lightText, now);
+      if (reading.lux < plant.effectiveLuxLow) {
+        routineAlerts.add(
+          'luce bassa (${reading.lux.toStringAsFixed(0)} lx), valuta una posizione piu luminosa',
+        );
+      } else if (reading.lux > plant.effectiveLuxHigh) {
+        routineAlerts.add(
+          'luce troppo intensa (${reading.lux.toStringAsFixed(0)} lx), meglio ridurre esposizione diretta',
+        );
+      }
       _lastLightRoutineAt = now;
       if (reading.lux < plant.effectiveLuxLow) {
         _notifyRoutineIfNeeded(
@@ -845,10 +864,12 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     if (tempDue) {
-      final tempText = reading?.temperature != null
-          ? '${voice.lead} Routine temperatura: ${reading!.temperature!.toStringAsFixed(1)}°C. ${_temperatureComment(reading.temperature!)}'
-          : '${voice.lead} Routine temperatura: dato non disponibile. Se aggiungi il sensore termico ti aggiorno anche su questo.';
-      _appendLocalAssistantUnique(tempText, now);
+      if (reading?.temperature != null &&
+          (reading!.temperature! < 16 || reading.temperature! > 30)) {
+        routineAlerts.add(
+          'temperatura fuori range (${reading.temperature!.toStringAsFixed(1)}°C)',
+        );
+      }
       _lastTempRoutineAt = now;
       if (reading?.temperature != null &&
           (reading!.temperature! < 16 || reading.temperature! > 30)) {
@@ -859,6 +880,18 @@ class _ChatScreenState extends State<ChatScreen> {
               'Temperatura fuori range (${reading.temperature!.toStringAsFixed(1)}°C).',
         );
       }
+    }
+
+    if (!force && routineAlerts.isEmpty) {
+      return;
+    }
+    if (routineAlerts.isNotEmpty) {
+      final summary = '${voice.lead}, routine: ${routineAlerts.join('. ')}.';
+      _appendRoutineAssistantThrottled(
+        summary,
+        now,
+        dedupeKey: routineAlerts.join('|'),
+      );
     }
   }
 
@@ -882,12 +915,20 @@ class _ChatScreenState extends State<ChatScreen> {
     return null;
   }
 
-  String _temperatureComment(double temp) {
-    if (temp < 16) return 'Sento freddo, proteggimi nelle ore serali.';
-    if (temp > 30) {
-      return 'Fa caldo, meglio evitare sole diretto nelle ore forti.';
-    }
-    return 'Temperatura nella mia zona comfort.';
+  void _appendRoutineAssistantThrottled(
+    String text,
+    DateTime timestamp, {
+    required String dedupeKey,
+  }) {
+    final sameKeyRecently =
+        _lastRoutineSummaryKey == dedupeKey &&
+        _lastRoutineSummaryAt != null &&
+        timestamp.difference(_lastRoutineSummaryAt!) <
+            const Duration(minutes: 120);
+    if (sameKeyRecently) return;
+    _lastRoutineSummaryKey = dedupeKey;
+    _lastRoutineSummaryAt = timestamp;
+    _appendLocalAssistantUnique(text, timestamp);
   }
 
   void _notifyProactiveAlertIfNeeded(
@@ -977,11 +1018,16 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!force) {
       final tooSoon =
           _lastProactiveAt != null &&
-          now.difference(_lastProactiveAt!).inMinutes < 20;
+          now.difference(_lastProactiveAt!).inMinutes < 60;
       final sameMood = _lastProactiveMood == insight.mood;
       if (tooSoon || sameMood || !critical) {
         return;
       }
+    }
+
+    if (_lastRoutineSummaryAt != null &&
+        now.difference(_lastRoutineSummaryAt!) < const Duration(minutes: 30)) {
+      return;
     }
 
     final text = _proactiveTextFor(insight, reading);
