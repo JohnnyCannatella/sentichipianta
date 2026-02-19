@@ -2,6 +2,12 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
+declare global {
+  interface ImportMeta {
+    main: boolean;
+  }
+}
+
 type DenoEnvAccessor = { get: (key: string) => string | undefined };
 type DenoGlobal = { env: DenoEnvAccessor };
 
@@ -33,13 +39,14 @@ const maxImages = 4;
 const maxDataUrlChars = 2_400_000;
 
 function jsonResponse(status: number, body: Record<string, any>) {
-  return new Response(JSON.stringify(body), {
+  const sanitizedBody = sanitizeJsonValue(body) as Record<string, any>;
+  return new Response(JSON.stringify(sanitizedBody), {
     status,
     headers: { "Content-Type": "application/json", ...corsHeaders },
   });
 }
 
-serve(async (req) => {
+export async function handleRequest(req: Request) {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -83,6 +90,7 @@ serve(async (req) => {
       ? payload.reading_history
       : [];
     const prediction = payload.prediction ?? null;
+    const plantId = payload.plant_id ?? null;
     const imageUrls = Array.isArray(payload.images)
       ? payload.images.filter((v: unknown) => typeof v === "string")
       : [];
@@ -97,7 +105,8 @@ serve(async (req) => {
       readingHistory,
       prediction,
     );
-    const messages = buildMessages(userMessage, imageUrls);
+    const recentConversation = await loadRecentConversation(plantId);
+    const messages = buildMessages(userMessage, imageUrls, recentConversation);
     const guardrails = buildGuardrailContext(reading, thresholds, prediction);
     const plantTypeContext = buildPlantTypeContext(plantType);
 
@@ -111,6 +120,7 @@ serve(async (req) => {
       "\"actions\":[{\"title\":\"...\",\"details\":\"...\",\"when\":\"today|within_24h|monitor\"}]," +
       "\"questions\":[\"...\"],\"needs_photo\":true|false}. " +
       "Massimo 3 actions e massimo 2 questions. " +
+      "Usa il contesto dei messaggi precedenti per evitare ripetizioni inutili e mantenere coerenza conversazionale. " +
       "Non contraddire i sensori: se umidita >= target evita water_now; se umidita <= low evita wait.\n\n" +
       telemetryContext +
       "\n\n" + guardrails +
@@ -149,11 +159,22 @@ serve(async (req) => {
       });
     }
 
-    const rawReply = String(data?.choices?.[0]?.message?.content ?? "").trim();
+    const rawReply = sanitizeText(String(data?.choices?.[0]?.message?.content ?? "").trim());
     const parsed = parseAssistantJson(rawReply);
+    const plantContext = await loadPlantContext({
+      plantId,
+      payloadPlant: payload.plant,
+      fallbackName: plantName,
+      fallbackType: plantType,
+    });
     const safeReply = buildSafeReply({
       parsed,
       rawReply,
+      userMessage,
+      plantName: plantContext.name,
+      plantType: plantContext.type,
+      plantCreatedAt: plantContext.createdAt,
+      hasImages: imageUrls.length > 0,
       reading,
       thresholds,
       prediction,
@@ -161,13 +182,12 @@ serve(async (req) => {
     const aiMeta = extractAiMeta(parsed, prediction, safeReply);
     const followUpDueAt = aiMeta.followUpDueAt?.toISOString() ?? null;
 
-    const plantId = payload.plant_id ?? null;
     if (plantId != null) {
       const { error: insertError } = await supabase.from("messages").insert([
         {
           plant_id: plantId,
           role: "user",
-          content: userMessage,
+          content: sanitizeText(userMessage),
         },
         {
           plant_id: plantId,
@@ -195,7 +215,7 @@ serve(async (req) => {
         },
         recommendation: {
           reply: safeReply,
-          raw: rawReply,
+          raw: sanitizeText(rawReply),
         },
         confidence: aiMeta.confidence,
         needs_follow_up: aiMeta.needsFollowUp,
@@ -217,7 +237,121 @@ serve(async (req) => {
       detail,
     });
   }
-});
+}
+
+if (import.meta.main) {
+  serve(handleRequest);
+}
+
+async function loadPlantContext(args: {
+  plantId: string | null;
+  payloadPlant: Record<string, any> | null;
+  fallbackName: string;
+  fallbackType: string;
+}) {
+  const payloadCreatedAt = parseIsoDate(args.payloadPlant?.created_at);
+  const payloadName = String(args.payloadPlant?.name ?? "").trim();
+  const payloadType = String(args.payloadPlant?.plant_type ?? "").trim();
+
+  let dbName = "";
+  let dbType = "";
+  let dbCreatedAt: Date | null = null;
+
+  if (args.plantId) {
+    const { data } = await supabase
+      .from("plants")
+      .select("name, plant_type, created_at")
+      .eq("id", args.plantId)
+      .limit(1)
+      .maybeSingle();
+    if (data && typeof data === "object") {
+      dbName = String(data.name ?? "").trim();
+      dbType = String(data.plant_type ?? "").trim();
+      dbCreatedAt = parseIsoDate(data.created_at);
+    }
+  }
+
+  return {
+    name: dbName || payloadName || args.fallbackName,
+    type: dbType || payloadType || args.fallbackType || "generic",
+    createdAt: dbCreatedAt ?? payloadCreatedAt,
+  };
+}
+
+async function loadRecentConversation(plantId: string | null) {
+  if (!plantId) return [];
+  const { data } = await supabase
+    .from("messages")
+    .select("role, content, created_at")
+    .eq("plant_id", plantId)
+    .order("created_at", { ascending: false })
+    .limit(10);
+
+  const rows = Array.isArray(data) ? data : [];
+  return rows
+    .reverse()
+    .map((row) => {
+      const role = String(row.role ?? "").toLowerCase();
+      if (role !== "user" && role !== "assistant") return null;
+      const normalizedContent = normalizeHistoryContent(String(row.content ?? ""));
+      if (!normalizedContent) return null;
+      return {
+        role,
+        content: normalizedContent,
+      };
+    })
+    .filter((item): item is { role: "user" | "assistant"; content: string } =>
+      Boolean(item)
+    )
+    .slice(-8);
+}
+
+function parseIsoDate(value: unknown): Date | null {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const dt = new Date(raw);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+function sanitizeText(value: string) {
+  return value
+    .replace(/\r\n/g, "\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+function sanitizeJsonValue(value: unknown): unknown {
+  if (typeof value === "string") return sanitizeText(value);
+  if (Array.isArray(value)) return value.map((item) => sanitizeJsonValue(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+        k,
+        sanitizeJsonValue(v),
+      ]),
+    );
+  }
+  return value;
+}
+
+function normalizeHistoryContent(content: string) {
+  const sanitized = sanitizeText(content);
+  if (!sanitized) return "";
+
+  const lines = sanitized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const responseLine = lines.find((line) => line.startsWith("Risposta:"));
+  const summaryLine = lines.find((line) => line.startsWith("Riepilogo:"));
+  const compact = [responseLine, summaryLine]
+    .filter((part): part is string => Boolean(part))
+    .join(" ");
+  const base = compact || lines.slice(0, 2).join(" ");
+  return base.slice(0, 700);
+}
 
 async function runFireworks(args: {
   apiKey: string;
@@ -333,6 +467,11 @@ function parseAssistantJson(rawReply: string) {
 function buildSafeReply(args: {
   parsed: Record<string, any> | null;
   rawReply: string;
+  userMessage: string;
+  plantName: string;
+  plantType: string;
+  plantCreatedAt: Date | null;
+  hasImages: boolean;
   reading: Record<string, any> | null;
   thresholds: Record<string, any> | null;
   prediction: Record<string, any> | null;
@@ -406,18 +545,18 @@ function buildSafeReply(args: {
     recheckHours = Math.max(recheckHours, 18);
   }
 
-  const summary = String(
+  const summary = sanitizeText(String(
     args.parsed?.motivation?.summary ?? args.parsed?.summary ?? "",
-  ).trim();
-  const consistency = String(args.parsed?.motivation?.sensor_consistency ?? "").trim();
+  ));
+  const consistency = sanitizeText(String(args.parsed?.motivation?.sensor_consistency ?? ""));
   const actions = Array.isArray(args.parsed?.actions)
     ? args.parsed.actions
       .map((item: unknown) => {
         if (item && typeof item === "object") {
           const raw = item as Record<string, unknown>;
-          const title = String(raw.title ?? "").trim();
-          const details = String(raw.details ?? "").trim();
-          const when = String(raw.when ?? "").trim();
+          const title = sanitizeText(String(raw.title ?? ""));
+          const details = sanitizeText(String(raw.details ?? ""));
+          const when = sanitizeText(String(raw.when ?? ""));
           return [title, details, when ? `(${when})` : ""]
             .filter((part) => part.length > 0)
             .join(" ");
@@ -427,7 +566,8 @@ function buildSafeReply(args: {
       .filter(Boolean)
     : [];
   const questions = Array.isArray(args.parsed?.questions)
-    ? args.parsed.questions.map((item: unknown) => String(item)).filter(Boolean).slice(0, 2)
+    ? args.parsed.questions.map((item: unknown) => sanitizeText(String(item))).filter(Boolean)
+      .slice(0, 2)
     : [];
   const parsedNeedsPhoto = Boolean(args.parsed?.needs_photo);
   const confidenceRaw = Number(args.parsed?.decision?.confidence ?? args.prediction?.confidence ?? NaN);
@@ -474,6 +614,17 @@ function buildSafeReply(args: {
   const primarySummary = summary || (!Number.isNaN(moisture)
     ? `Stato attuale: umidita suolo ${moisture.toFixed(1)}%.`
     : "Stato attuale: dati parziali.");
+  const conversationalReply = buildConversationalReply({
+    userMessage: args.userMessage,
+    plantName: args.plantName,
+    plantType: args.plantType,
+    plantCreatedAt: args.plantCreatedAt,
+    hasImages: args.hasImages,
+    summary: primarySummary,
+    waterDecision,
+    lightDecision,
+    urgency,
+  });
 
   const bulletActions = (actions.length > 0 ? actions : [waterLine, lightLine]).slice(0, 3);
   const followup = questions.length > 0
@@ -483,10 +634,11 @@ function buildSafeReply(args: {
     ? "\nVerifica richiesta: invia foto pianta intera, foglia (fronte/retro) e terriccio."
     : "";
 
-  return [
+  const composed = [
+    `Risposta: ${conversationalReply}`,
     `Decisione: acqua=${waterDecision}, luce=${lightDecision}, urgenza=${urgencyLine}.`,
     `Riepilogo: ${primarySummary}`,
-    consistency.isNotEmpty ? `Coerenza sensori: ${consistency}` : null,
+    consistency.length > 0 ? `Coerenza sensori: ${consistency}` : null,
     "",
     "Azioni:",
     `- Acqua: ${waterLine}`,
@@ -502,6 +654,241 @@ function buildSafeReply(args: {
     photoHint,
   ].filter((line): line is string => typeof line === "string" && line.length > 0)
     .join("\n");
+  return sanitizeText(composed);
+}
+
+function firstSentence(text: string) {
+  const normalized = String(text ?? "").trim();
+  if (!normalized) {
+    return "Situazione aggiornata.";
+  }
+  const idx = normalized.indexOf(".");
+  return idx >= 0 ? normalized.slice(0, idx + 1).trim() : normalized;
+}
+
+export function buildConversationalReply(args: {
+  userMessage: string;
+  plantName: string;
+  plantType: string;
+  plantCreatedAt: Date | null;
+  hasImages: boolean;
+  summary: string;
+  waterDecision: string;
+  lightDecision: string;
+  urgency: string;
+}) {
+  const msg = args.userMessage.toLowerCase().replace(/[^a-z0-9\u00C0-\u024F\s]/gi, " ");
+  const statusLine = args.urgency === "high"
+    ? "In questo momento richiedo attenzione prioritaria."
+    : "In questo momento sono abbastanza stabile.";
+  const summaryLine = firstSentence(args.summary);
+  const plantName = args.plantName.trim() || "la pianta";
+
+  const isGreeting = containsAny(msg, [
+    "ciao",
+    "buongiorno",
+    "buonasera",
+    "hey",
+    "salve",
+  ]);
+  const asksAge = (containsAny(msg, ["quanti giorni", "da quanto tempo", "eta", "età"]) &&
+      containsAny(msg, ["vita", "vivi", "sei"])) ||
+    containsAny(msg, ["da quanti giorni sei in vita"]);
+  const asksNeed = containsAny(msg, [
+    "hai bisogno",
+    "di cosa hai bisogno",
+    "cosa ti serve",
+    "serve qualcosa",
+  ]);
+  const asksCareHow = containsAny(msg, [
+    "come faccio a tenerti in vita",
+    "come ti tengo in vita",
+    "come prendermi cura",
+    "come posso curarti",
+    "cosa devo fare per tenerti bene",
+  ]);
+  const asksPlantType = containsAny(msg, [
+    "che tipo di pianta",
+    "che pianta sei",
+    "di che specie sei",
+    "che specie sei",
+  ]);
+  const asksAlive = containsAny(msg, [
+    "sei viva",
+    "sei ancora viva",
+    "stai viva",
+    "stai bene",
+    "stai morendo",
+    "sei messa male",
+  ]);
+  const asksYellowIssue = containsAny(msg, [
+    "peperoncini sono gialli",
+    "peperoncini gialli",
+    "foglie gialle",
+    "frutti gialli",
+    "ingiall",
+    "gialli",
+  ]);
+  const asksHealthIssue = containsAny(msg, [
+    "macchie",
+    "afidi",
+    "parassiti",
+    "insetti",
+    "foglie arricciate",
+    "arricciate",
+    "carenza",
+    "fungo",
+    "muffa",
+    "malatt",
+  ]);
+
+  if (asksAge) {
+    if (!args.plantCreatedAt) {
+      return `Non ho una data di nascita registrata per ${plantName}, ma ${statusLine.toLowerCase()}`;
+    }
+    const now = new Date();
+    const ms = now.getTime() - args.plantCreatedAt.getTime();
+    const days = Math.max(0, Math.floor(ms / (24 * 60 * 60 * 1000)));
+    const dayLabel = days === 1 ? "giorno" : "giorni";
+    return `Sono in vita da circa ${days} ${dayLabel}. ${statusLine}`;
+  }
+
+  if (asksCareHow || asksNeed) {
+    const waterNeed = args.waterDecision === "water_now"
+      ? "Acqua: oggi serve una irrigazione leggera."
+      : args.waterDecision === "wait"
+      ? "Acqua: adesso non irrigare."
+      : "Acqua: controlla il suolo nelle prossime ore.";
+    const lightNeed = args.lightDecision === "increase"
+      ? "Luce: aumenta gradualmente l'esposizione."
+      : args.lightDecision === "reduce"
+      ? "Luce: riduci la luce diretta nelle ore intense."
+      : "Luce: mantieni la posizione attuale.";
+    const speciesHint = buildSpeciesHint(args.plantType);
+    return `${statusLine} Per tenermi bene: ${waterNeed} ${lightNeed}${speciesHint}`;
+  }
+
+  if (asksPlantType) {
+    const label = plantTypeLabel(args.plantType);
+    return `Sono una pianta di tipo ${label}. ${statusLine} ${summaryLine}`;
+  }
+
+  if (asksAlive) {
+    const visualNote = args.hasImages
+      ? " Ho considerato anche la foto che hai inviato."
+      : "";
+    return `Si, sono viva.${visualNote} ${statusLine} ${summaryLine}`;
+  }
+
+  if (asksYellowIssue) {
+    const waterHint = args.waterDecision === "water_now"
+      ? "Valuta una irrigazione leggera: stress idrico puo favorire ingiallimenti."
+      : args.waterDecision === "wait"
+      ? "Evita eccessi d'acqua: troppo umido puo contribuire all'ingiallimento."
+      : "Controlla l'umidita a 2 cm prima di irrigare.";
+    const lightHint = args.lightDecision === "increase"
+      ? "Aumenta gradualmente la luce: luce bassa puo rallentare maturazione e colore."
+      : args.lightDecision === "reduce"
+      ? "Riduci luce diretta intensa: stress da sole puo causare scolorimenti."
+      : "Mantieni luce stabile e monitorata.";
+    const photoNote = args.hasImages
+      ? " Dalla foto posso fare una prima valutazione, ma conferma anche stato foglie e peduncolo."
+      : " Se puoi, invia foto ravvicinata di frutti e foglie per distinguere maturazione normale da carenza.";
+    return `Possibili cause dei peperoncini gialli: maturazione, stress luce/acqua o carenze nutrizionali lievi. ${waterHint} ${lightHint}${photoNote}`;
+  }
+
+  if (asksHealthIssue) {
+    const checklist = [
+      "foglie (fronte/retro): presenza di puntini, aloni o insetti",
+      "fusto/nodi: lesioni, marciumi o muffe",
+      "substrato: odore, compattazione e ristagno",
+      "diffusione: problema su poche foglie o su tutta la pianta",
+    ].join("; ");
+    const waterHint = args.waterDecision === "water_now"
+      ? "Acqua: fai solo irrigazione leggera e verifica drenaggio."
+      : args.waterDecision === "wait"
+      ? "Acqua: evita irrigazioni aggiuntive finche non confermi secchezza a 2 cm."
+      : "Acqua: prima misura l'umidita a 2 cm e poi decidi.";
+    const lightHint = args.lightDecision === "increase"
+      ? "Luce: aumenta gradualmente, evitando shock improvvisi."
+      : args.lightDecision === "reduce"
+      ? "Luce: riduci esposizione diretta nelle ore intense."
+      : "Luce: mantieni posizione stabile.";
+    const photoHint = args.hasImages
+      ? " Ho visto la foto, ma per diagnosi migliore servono anche dettagli ravvicinati di foglie e nodi."
+      : " Invia foto ravvicinate di foglie (fronte/retro), fusto e terriccio per una valutazione piu affidabile.";
+    return `Capito: potrebbe essere stress, carenza o parassiti, non una sola causa certa al primo passaggio. Checklist osservabile: ${checklist}. ${waterHint} ${lightHint}${photoHint}`;
+  }
+
+  if (isGreeting) {
+    return `Ciao. ${statusLine} ${summaryLine}`;
+  }
+
+  const asksForWater = msg.includes("acqua") ||
+    msg.includes("annaff") ||
+    msg.includes("irrig");
+  if (asksForWater) {
+    if (args.waterDecision === "water_now") {
+      return "Si, ora conviene una irrigazione leggera e uniforme.";
+    }
+    if (args.waterDecision === "wait") {
+      return "No, adesso non irrigare: il suolo non e ancora in fascia secca.";
+    }
+    return "Per ora non irrigare subito: ricontrolla il suolo nelle prossime ore.";
+  }
+
+  const asksForLight = msg.includes("luce") ||
+    msg.includes("sole") ||
+    msg.includes("ombra");
+  if (asksForLight) {
+    if (args.lightDecision === "increase") {
+      return "Conviene aumentare gradualmente la luce disponibile.";
+    }
+    if (args.lightDecision === "reduce") {
+      return "Conviene ridurre la luce diretta nelle ore piu intense.";
+    }
+    return "La luce attuale e adeguata: mantieni la posizione.";
+  }
+
+  const asksForInfo = msg.includes("inform") ||
+    msg.includes("come stai") ||
+    msg.includes("stato") ||
+    msg.includes("situazione");
+  if (asksForInfo) {
+    return `${statusLine} ${summaryLine}`;
+  }
+
+  return `${statusLine} ${summaryLine}`;
+}
+
+function containsAny(text: string, parts: string[]) {
+  return parts.some((part) => text.includes(part));
+}
+
+function buildSpeciesHint(plantType: string) {
+  const normalized = plantType.trim().toLowerCase();
+  if (normalized === "peperoncino") {
+    return " Specie: peperoncino, preferisco luce alta stabile e substrato umido ma non saturo.";
+  }
+  if (normalized === "cactus") {
+    return " Specie: cactus, meglio irrigazioni distanziate e molta luce.";
+  }
+  if (normalized === "sansevieria") {
+    return " Specie: sansevieria, tollero bene periodi con poca acqua.";
+  }
+  if (normalized === "bonsai") {
+    return " Specie: bonsai, utile controllo frequente del substrato.";
+  }
+  return "";
+}
+
+function plantTypeLabel(plantType: string) {
+  const normalized = plantType.trim().toLowerCase();
+  if (normalized === "peperoncino") return "peperoncino";
+  if (normalized === "cactus") return "cactus";
+  if (normalized === "sansevieria") return "sansevieria";
+  if (normalized === "bonsai") return "bonsai";
+  return "generica";
 }
 
 function extractAiMeta(
@@ -599,21 +986,36 @@ function buildTelemetryContext(
   return `${latestLine}\n${predictionLine}\nStorico recente:\n${historyLines}`;
 }
 
-function buildMessages(userMessage: string, imageUrls: string[]) {
+function buildMessages(
+  userMessage: string,
+  imageUrls: string[],
+  recentConversation: Array<{ role: "user" | "assistant"; content: string }>,
+) {
+  const historyMessages = recentConversation.map((item) => ({
+    role: item.role,
+    content: item.content,
+  }));
+
   if (imageUrls.length === 0) {
-    return [{ role: "user", content: userMessage }];
+    return [
+      ...historyMessages,
+      { role: "user", content: userMessage },
+    ];
   }
 
-  return [{
-    role: "user",
-    content: [
-      { type: "text", text: userMessage },
-      ...imageUrls.map((url) => ({
-        type: "image_url",
-        image_url: { url },
-      })),
-    ],
-  }];
+  return [
+    ...historyMessages,
+    {
+      role: "user",
+      content: [
+        { type: "text", text: userMessage },
+        ...imageUrls.map((url) => ({
+          type: "image_url",
+          image_url: { url },
+        })),
+      ],
+    },
+  ];
 }
 
 function validateImageInputs(imageUrls: string[]) {

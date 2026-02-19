@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="420" viewBox="0 0 420 420">
+  <g id="pot_base">
+    <ellipse cx="210" cy="338" rx="130" ry="22" fill="#D7D0C4" opacity="0.45"/>
+    <path d="M120 210h180l-18 122c-2 15-16 26-31 26H169c-15 0-29-11-31-26L120 210z" fill="#D2AA86"/>
+    <path d="M106 190h208c10 0 18 8 18 18s-8 18-18 18H106c-10 0-18-8-18-18s8-18 18-18z" fill="#C48F66"/>
+    <path d="M120 210h180" stroke="#8E6F55" stroke-width="6" stroke-linecap="round"/>
+  </g>
+</svg>

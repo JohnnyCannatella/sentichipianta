@@ -77,6 +77,9 @@ class _ChatScreenState extends State<ChatScreen> {
   int? _lastFollowUpDecisionId;
   DateTime? _lastRoutineSummaryAt;
   String? _lastRoutineSummaryKey;
+  String? _routineStatus;
+  DateTime? _routineStatusAt;
+  DateTime? _lastUserMessageAt;
   static const _weekdayNames = [
     'Lunedi',
     'Martedi',
@@ -136,6 +139,9 @@ class _ChatScreenState extends State<ChatScreen> {
       _lastProactiveNotificationAt = null;
       _lastRoutineSummaryAt = null;
       _lastRoutineSummaryKey = null;
+      _routineStatus = null;
+      _routineStatusAt = null;
+      _lastUserMessageAt = null;
       _lastRenderedMessageCount = 0;
     }
   }
@@ -228,6 +234,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _pendingAttachments = const <_PendingImageAttachment>[];
       _isSending = true;
       _fallbackAssistantMessage = null;
+      _lastUserMessageAt = DateTime.now();
     });
 
     _scheduleScrollToBottom(animated: true);
@@ -260,6 +267,8 @@ class _ChatScreenState extends State<ChatScreen> {
         _lastAiConfidence = result.confidence;
         final trimmedReply = result.reply.trim();
         if (result.persisted) {
+          // Remove transient local assistant hints once cloud sync is healthy.
+          _localMessages.removeWhere((m) => !m.isUser);
           if (trimmedReply.isNotEmpty) {
             _fallbackAssistantMessage = ChatMessage(
               text: trimmedReply,
@@ -683,6 +692,8 @@ class _ChatScreenState extends State<ChatScreen> {
               isSending: _isSending,
               isClearing: _isClearing,
               hasPlant: widget.selectedPlant != null,
+              routineStatus: _routineStatus,
+              routineStatusAt: _routineStatusAt,
               attachments: _pendingAttachments,
               showAddPhotoAction: widget.selectedPlant != null,
               showPhotoHint:
@@ -730,6 +741,9 @@ class _ChatScreenState extends State<ChatScreen> {
       _lastProactiveNotificationAt = null;
       _lastRoutineSummaryAt = null;
       _lastRoutineSummaryKey = null;
+      _routineStatus = null;
+      _routineStatusAt = null;
+      _lastUserMessageAt = null;
       return;
     }
 
@@ -819,8 +833,6 @@ class _ChatScreenState extends State<ChatScreen> {
         _lastTempRoutineAt == null ||
         now.difference(_lastTempRoutineAt!) >= tempCooldown;
 
-    final voice = _voiceForPlant(plant);
-
     final routineAlerts = <String>[];
 
     if (reading != null && waterDue) {
@@ -882,53 +894,37 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     }
 
-    if (!force && routineAlerts.isEmpty) {
-      return;
+    final statusText = routineAlerts.isNotEmpty
+        ? 'Alert routine: ${routineAlerts.join('. ')}.'
+        : (reading == null
+              ? 'Routine: in attesa di nuove letture.'
+              : 'Routine stabile: umidita ${reading.moisture.toStringAsFixed(0)}%, luce ${reading.lux.toStringAsFixed(0)} lx.');
+    final statusKey = routineAlerts.isNotEmpty
+        ? 'alert:${routineAlerts.join('|')}'
+        : (reading == null
+              ? 'stable:none'
+              : 'stable:${reading.moisture.toStringAsFixed(0)}:${reading.lux.toStringAsFixed(0)}');
+    final shouldUpdateStable =
+        force ||
+        _lastRoutineSummaryAt == null ||
+        now.difference(_lastRoutineSummaryAt!) >= const Duration(minutes: 20);
+    final shouldUpdateAlert =
+        routineAlerts.isNotEmpty &&
+        (_lastRoutineSummaryKey != statusKey ||
+            _lastRoutineSummaryAt == null ||
+            now.difference(_lastRoutineSummaryAt!) >=
+                const Duration(minutes: 120));
+    final shouldUpdate = routineAlerts.isNotEmpty
+        ? shouldUpdateAlert
+        : shouldUpdateStable;
+    if (shouldUpdate) {
+      setState(() {
+        _routineStatus = statusText;
+        _routineStatusAt = now;
+        _lastRoutineSummaryAt = now;
+        _lastRoutineSummaryKey = statusKey;
+      });
     }
-    if (routineAlerts.isNotEmpty) {
-      final summary = '${voice.lead}, routine: ${routineAlerts.join('. ')}.';
-      _appendRoutineAssistantThrottled(
-        summary,
-        now,
-        dedupeKey: routineAlerts.join('|'),
-      );
-    }
-  }
-
-  void _appendLocalAssistantUnique(String text, DateTime timestamp) {
-    final normalized = text.trim();
-    if (normalized.isEmpty) return;
-    final lastAssistant = _lastAssistantText();
-    if (lastAssistant == normalized) return;
-    setState(() {
-      _localMessages.add(
-        ChatMessage(text: normalized, isUser: false, timestamp: timestamp),
-      );
-    });
-  }
-
-  String? _lastAssistantText() {
-    final all = [..._localMessages, ..._pendingMessages];
-    for (var i = all.length - 1; i >= 0; i--) {
-      if (!all[i].isUser) return all[i].text;
-    }
-    return null;
-  }
-
-  void _appendRoutineAssistantThrottled(
-    String text,
-    DateTime timestamp, {
-    required String dedupeKey,
-  }) {
-    final sameKeyRecently =
-        _lastRoutineSummaryKey == dedupeKey &&
-        _lastRoutineSummaryAt != null &&
-        timestamp.difference(_lastRoutineSummaryAt!) <
-            const Duration(minutes: 120);
-    if (sameKeyRecently) return;
-    _lastRoutineSummaryKey = dedupeKey;
-    _lastRoutineSummaryAt = timestamp;
-    _appendLocalAssistantUnique(text, timestamp);
   }
 
   void _notifyProactiveAlertIfNeeded(
@@ -1016,6 +1012,12 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     if (!force) {
+      final recentlyUserActive =
+          _lastUserMessageAt != null &&
+          now.difference(_lastUserMessageAt!) < const Duration(minutes: 45);
+      if (recentlyUserActive) {
+        return;
+      }
       final tooSoon =
           _lastProactiveAt != null &&
           now.difference(_lastProactiveAt!).inMinutes < 60;
@@ -1031,19 +1033,12 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     final text = _proactiveTextFor(insight, reading);
-    if (_localMessages.isNotEmpty &&
-        _localMessages.last.isUser == false &&
-        _localMessages.last.text == text) {
-      return;
-    }
-
     if (!mounted) {
       return;
     }
     setState(() {
-      _localMessages.add(
-        ChatMessage(text: text, isUser: false, timestamp: now),
-      );
+      _routineStatus = 'Aggiornamento: $text';
+      _routineStatusAt = now;
       _lastProactiveMood = insight.mood;
       _lastProactiveAt = now;
     });
@@ -1434,6 +1429,14 @@ class _ChatBubble extends StatelessWidget {
   final bool groupedWithPrevious;
   final bool groupedWithNext;
 
+  bool _isStructuredAssistantText(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return false;
+    if (trimmed.startsWith('Decisione:')) return true;
+    return trimmed.contains('\nDecisione:') ||
+        (trimmed.startsWith('Risposta:') && trimmed.contains('Decisione:'));
+  }
+
   @override
   Widget build(BuildContext context) {
     final maxBubbleWidth = math.min(
@@ -1498,12 +1501,15 @@ class _ChatBubble extends StatelessWidget {
               ? CrossAxisAlignment.end
               : CrossAxisAlignment.start,
           children: [
-            Text(
-              message.text,
-              style: Theme.of(
-                context,
-              ).textTheme.bodyLarge?.copyWith(color: textColor, height: 1.3),
-            ),
+            if (!message.isUser && _isStructuredAssistantText(message.text))
+              _StructuredAssistantMessage(text: message.text)
+            else
+              Text(
+                message.text,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyLarge?.copyWith(color: textColor, height: 1.3),
+              ),
             if (!groupedWithNext) ...[
               const SizedBox(height: 6),
               Text(
@@ -1520,6 +1526,148 @@ class _ChatBubble extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _StructuredAssistantMessage extends StatefulWidget {
+  const _StructuredAssistantMessage({required this.text});
+
+  final String text;
+
+  @override
+  State<_StructuredAssistantMessage> createState() =>
+      _StructuredAssistantMessageState();
+}
+
+class _StructuredAssistantMessageState
+    extends State<_StructuredAssistantMessage> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final lines = widget.text
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toList(growable: false);
+    final decision = lines.firstWhere(
+      (line) => line.startsWith('Decisione:'),
+      orElse: () => '',
+    );
+    final response = lines.firstWhere(
+      (line) => line.startsWith('Risposta:'),
+      orElse: () => '',
+    );
+    final summary = lines.firstWhere(
+      (line) => line.startsWith('Riepilogo:'),
+      orElse: () => '',
+    );
+    final summaryText = summary.isEmpty
+        ? 'Situazione aggiornata.'
+        : summary.replaceFirst('Riepilogo:', '').trim();
+    final responseText = response.replaceFirst('Risposta:', '').trim();
+    final chatIntro = responseText.isNotEmpty
+        ? responseText
+        : _chatLikeIntro(decision, summaryText);
+    final statusLine = decision.isNotEmpty
+        ? decision.replaceFirst('Decisione:', 'Stato:').trim()
+        : 'Stato: non disponibile.';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          chatIntro,
+          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+            color: AppColors.textDark,
+            height: 1.3,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          statusLine,
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+            color: AppColors.textMuted,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 4),
+        TextButton(
+          onPressed: () => setState(() => _expanded = !_expanded),
+          style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            minimumSize: const Size(20, 24),
+          ),
+          child: Text(_expanded ? 'Nascondi resoconto' : 'Mostra resoconto'),
+        ),
+        if (_expanded)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFEEE9DF),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFD9D1C3)),
+            ),
+            child: Text(
+              widget.text,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: AppColors.textDark,
+                height: 1.3,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  String _firstSentence(String text) {
+    final normalized = text.trim();
+    if (normalized.isEmpty) {
+      return 'Ti aggiorno sulla situazione attuale.';
+    }
+    final idx = normalized.indexOf('.');
+    if (idx == -1) {
+      return normalized;
+    }
+    return normalized.substring(0, idx + 1);
+  }
+
+  String _chatLikeIntro(String decisionLine, String summaryText) {
+    final d = decisionLine.toLowerCase();
+    final waterNow = d.contains('acqua=water_now');
+    final waterWait = d.contains('acqua=wait');
+    final lightIncrease = d.contains('luce=increase');
+    final lightReduce = d.contains('luce=reduce');
+    final urgencyHigh =
+        d.contains('urgenza=alta') || d.contains('urgency=high');
+
+    final parts = <String>[];
+    if (urgencyHigh) {
+      parts.add('In questo momento ho bisogno di attenzione.');
+    } else {
+      parts.add('In questo momento sto abbastanza stabile.');
+    }
+
+    if (waterNow) {
+      parts.add('Serve una piccola irrigazione.');
+    } else if (waterWait) {
+      parts.add('Acqua: meglio aspettare per ora.');
+    } else {
+      parts.add('Acqua: ricontrollo a breve.');
+    }
+
+    if (lightIncrease) {
+      parts.add('Luce: mi farebbe bene un punto piu luminoso.');
+    } else if (lightReduce) {
+      parts.add('Luce: meglio ridurre l\'esposizione diretta.');
+    }
+
+    if (parts.length < 3) {
+      parts.add(_firstSentence(summaryText));
+    }
+    return parts.join(' ');
   }
 }
 
@@ -1630,6 +1778,8 @@ class _ChatInput extends StatelessWidget {
     required this.isSending,
     required this.isClearing,
     required this.hasPlant,
+    required this.routineStatus,
+    required this.routineStatusAt,
     required this.attachments,
     required this.showAddPhotoAction,
     required this.showPhotoHint,
@@ -1644,6 +1794,8 @@ class _ChatInput extends StatelessWidget {
   final bool isSending;
   final bool isClearing;
   final bool hasPlant;
+  final String? routineStatus;
+  final DateTime? routineStatusAt;
   final List<_PendingImageAttachment> attachments;
   final bool showAddPhotoAction;
   final bool showPhotoHint;
@@ -1666,6 +1818,31 @@ class _ChatInput extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (hasPlant && routineStatus != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEAF0E6),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFD2DDCB)),
+                ),
+                child: Text(
+                  routineStatusAt == null
+                      ? routineStatus!
+                      : '$routineStatus (agg. ${DateFormat('HH:mm').format(routineStatusAt!)})',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: const Color(0xFF35513E),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
           if (attachments.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
