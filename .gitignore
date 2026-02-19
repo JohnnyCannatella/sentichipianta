@@ -43,3 +43,11 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Supabase local CLI cache/state
+supabase/.temp/
